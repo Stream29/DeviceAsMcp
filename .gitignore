@@ -1,0 +1,17 @@
+# Gradle
+.gradle/
+.kotlin/
+build/
+**/build/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+out/
+
+# Kotlin/Native
+.konan/
+
+# Local environment
+local.properties
+.DS_Store
