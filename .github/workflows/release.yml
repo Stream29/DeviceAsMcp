@@ -33,6 +33,8 @@ jobs:
           :server:test
           :daemon:compileKotlinLinuxX64
           :web:wasmJsBrowserDistribution
+      - name: Validate POSIX installer
+        run: sh -n install/install-device-as-mcp.sh
 
   build:
     needs: verify
@@ -44,7 +46,7 @@ jobs:
             task: :daemon:linkReleaseExecutableLinuxX64
             source: daemon/build/bin/linuxX64/releaseExecutable/daemon.kexe
             asset: device-as-mcp-linux-x64
-          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
             task: :daemon:linkReleaseExecutableLinuxArm64
             source: daemon/build/bin/linuxArm64/releaseExecutable/daemon.kexe
             asset: device-as-mcp-linux-arm64
@@ -69,6 +71,21 @@ jobs:
       - name: Build native executable
         shell: bash
         run: ./gradlew --stacktrace "${{ matrix.task }}"
+      - name: Validate Windows installer
+        if: matrix.asset == 'device-as-mcp-windows-x64.exe'
+        shell: powershell
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path "install/install-device-as-mcp.ps1"),
+              [ref]$tokens,
+              [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -ne 0) {
+              $errors | ForEach-Object { Write-Error $_ }
+              throw "PowerShell installer syntax validation failed."
+          }
       - name: Stage release asset
         shell: bash
         run: |
