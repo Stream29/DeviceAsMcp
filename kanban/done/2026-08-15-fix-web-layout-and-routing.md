@@ -1,6 +1,6 @@
 # Task Tree
 
-- Fix management-panel layout and routing
+- [done] Fix management-panel layout and routing
   - [done] Identify the white-edge cause
   - [done] Identify the missing navigation model
   - [done] Define semantic management routes
@@ -13,11 +13,11 @@
   - [done] Preserve authentication redirects
     - [done] Target OAuth login redirects at `/login`
     - [done] Retain authorization return state
-  - Validate navigation and production rendering
+  - [done] Validate navigation and production rendering
     - [done] Add route and redirect tests
     - [done] Build the Wasm distribution
     - [done] Verify rendered viewport edges
-    - Redeploy and verify direct routes
+    - [done] Redeploy and verify direct routes
 
 # Details
 
