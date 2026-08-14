@@ -52,7 +52,6 @@ kotlin {
             implementation(libs.kotlinx.coroutines.core)
             implementation(libs.kotlinx.serialization.json)
             implementation(libs.ktor.client.core)
-            implementation(libs.ktor.client.cio)
             implementation(libs.ktor.client.content.negotiation)
             implementation(libs.ktor.serialization.json)
             implementation(libs.okio)
@@ -60,13 +59,35 @@ kotlin {
         val nativeMain = create("nativeMain") {
             dependsOn(commonMain)
         }
+        val linuxMain = create("linuxMain") {
+            dependsOn(nativeMain)
+            dependencies {
+                implementation(libs.ktor.client.curl)
+            }
+        }
         val unixMain = create("unixMain") {
             dependsOn(nativeMain)
         }
-        linuxX64Main.get().dependsOn(unixMain)
-        linuxArm64Main.get().dependsOn(unixMain)
-        macosArm64Main.get().dependsOn(unixMain)
-        mingwX64Main.get().dependsOn(nativeMain)
+        linuxX64Main.get().apply {
+            dependsOn(linuxMain)
+            dependsOn(unixMain)
+        }
+        linuxArm64Main.get().apply {
+            dependsOn(linuxMain)
+            dependsOn(unixMain)
+        }
+        macosArm64Main.get().apply {
+            dependsOn(unixMain)
+            dependencies {
+                implementation(libs.ktor.client.darwin)
+            }
+        }
+        mingwX64Main.get().apply {
+            dependsOn(nativeMain)
+            dependencies {
+                implementation(libs.ktor.client.winhttp)
+            }
+        }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
             implementation(libs.kotlinx.coroutines.test)

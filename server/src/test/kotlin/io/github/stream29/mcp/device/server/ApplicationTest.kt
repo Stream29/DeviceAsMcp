@@ -26,18 +26,24 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.options
 import io.ktor.client.request.post
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.HttpHeaders
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.testing.testApplication
+import io.ktor.utils.io.readAvailable
 import java.util.UUID
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -233,6 +239,45 @@ class ApplicationTest {
                 .orEmpty()
                 .startsWith("http://localhost:8081/login?authorize="),
         )
+    }
+
+    @Test
+    fun failedSseKeepAliveReleasesTheDeviceOwner() = testApplication {
+        val runtime = testRuntime()
+        val user = requireNotNull(runtime.accounts.register("sse-owner", "long enough password"))
+        val device = runtime.accounts.enrollDevice(user.id, "SSE device", "linux-x64")
+        application { deviceAsMcpModule(runtime) }
+
+        coroutineScope {
+            val stream = launch {
+                client.prepareGet("/daemon/connect?deviceId=${device.deviceId.value}") {
+                    header("X-Device-Secret", device.secret)
+                    header(HttpHeaders.Accept, ContentType.Text.EventStream)
+                }.execute { response ->
+                    assertEquals(HttpStatusCode.OK, response.status)
+                    val channel = response.bodyAsChannel()
+                    val buffer = ByteArray(1_024)
+                    while (channel.readAvailable(buffer) >= 0) {
+                        // Keep consuming until the server closes the failed connection.
+                    }
+                }
+            }
+
+            val owner = withTimeout(5_000) {
+                while (true) {
+                    runtime.routing.deviceOwner(device.deviceId)?.let { return@withTimeout it }
+                    delay(10)
+                }
+                error("unreachable")
+            }
+            assertTrue(runtime.connections.remove(device.deviceId, owner.connectionId))
+            withTimeout(OperationService.OWNER_RENEW_MILLIS + 5_000) {
+                while (runtime.routing.deviceOwner(device.deviceId) != null) {
+                    delay(10)
+                }
+            }
+            stream.cancelAndJoin()
+        }
     }
 
     @Test

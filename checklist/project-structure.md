@@ -53,6 +53,8 @@
 - Store a random `connectionId` with the owner `instanceId`.
 - Require `instanceId` and `connectionId` to match in atomic Redis compare-and-set operations that renew or release an owner lease.
 - Require the local SSE connection's `connectionId` to match the current Redis owner record before dispatching a new operation through it.
+- End the owning SSE route and remove its local connection when a keepalive
+  write fails.
 - Reject a later daemon SSE connection while the existing owner lease remains valid.
 - Allow a daemon connection to register after the previous owner lease expires.
 - Dispatch a device operation directly when the accepting instance owns the target daemon connection.
@@ -89,6 +91,10 @@
 - Build the server for the JVM.
 - Implement the JVM server with Ktor Server.
 - Use Ktor Client for client-side network communication.
+- Select a TLS-capable native Ktor client engine per daemon platform.
+  - Use Curl on Linux.
+  - Use Darwin on macOS.
+  - Use WinHttp on Windows.
 - Model shared wire protocols with `kotlinx.serialization` and sealed interfaces.
 - Finalize concrete wire-schema fields while implementing each protocol slice rather than treating the complete schema as a prerequisite for development.
 - Let the server expose each authenticated user's devices as remote MCP endpoints.

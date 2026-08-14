@@ -1,18 +1,9 @@
 package io.github.stream29.mcp.device.daemon
 
-import io.github.stream29.mcp.device.protocol.ProtocolJson
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.client.plugins.sse.SSE
-import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.runBlocking
 
 fun main(args: Array<String>) = runBlocking {
-    val client = HttpClient(CIO) {
-        install(ContentNegotiation) { json(ProtocolJson) }
-        install(SSE)
-    }
+    val client = createPlatformHttpClient()
     val store = ConfigStore()
     try {
         val config = when (args.firstOrNull()) {

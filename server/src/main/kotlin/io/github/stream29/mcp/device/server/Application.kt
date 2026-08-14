@@ -54,10 +54,10 @@ import io.ktor.server.sse.sse
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.copyTo
 import io.ktor.utils.io.readAvailable
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -535,6 +535,7 @@ private fun io.ktor.server.routing.Route.daemonRoutes(runtime: ServerRuntime) {
             runtime.routing.releaseDevice(deviceId, owner)
             return@sse
         }
+        val connectionEnded = CompletableDeferred<Unit>()
         val renewJob = CoroutineScope(coroutineContext).launch {
             while (isActive) {
                 delay(OperationService.OWNER_RENEW_MILLIS)
@@ -545,13 +546,13 @@ private fun io.ktor.server.routing.Route.daemonRoutes(runtime: ServerRuntime) {
                     !runtime.routing.renewDevice(deviceId, renewed) ||
                     !runtime.connections.keepAlive(deviceId, connectionId)
                 ) {
-                    this@sse.close()
+                    connectionEnded.complete(Unit)
                     break
                 }
             }
         }
         try {
-            awaitCancellation()
+            connectionEnded.await()
         } finally {
             renewJob.cancel()
             runtime.connections.remove(deviceId, connectionId)
