@@ -1,0 +1,55 @@
+# Task Tree
+
+- [done] 确定核心传输协议
+  - [done] 确定 daemon 与 server 的 SSE/HTTP 协议
+    - [done] 将用户级亲和确定为路由优化
+    - [done] [确定跨实例设备操作投递](2026-08-13-decide-cross-instance-operation-dispatch.md)
+    - [done] [确定设备操作投递协议](../done/2026-08-13-decide-operation-delivery-contract.md)
+    - [done] 确定 SSE 事件确认与重放语义
+    - [done] 确定操作超时与重传参数
+    - [done] 确定文件内容承载方式
+  - [done] [确定 remote MCP 协议边界](2026-08-13-decide-remote-mcp-contract.md)
+    - [done] 确定统一 `/mcp` resource URI
+    - [done] 确定 remote MCP 鉴权后路由
+  - [done] 更新顶层任务树
+  - [done] 记录确认后的项目决策
+
+# Details
+
+- 作为 `2026-08-13-build-device-as-mcp.md` 的协议细化子任务。
+- daemon 通过 SSE 接收 server 发起的调用，并通过普通 HTTP 回传结果。
+- 任意 server 实例都可以接受 remote MCP 调用。
+- 用户 ID 亲和仅用于提高本地直发命中率，不再是正确性前提。
+- remote MCP 使用统一 `/mcp` resource URI；网关先验证 access token，并可按解析出的用户 ID 做尽力亲和。
+- 每个 server 进程启动时生成一个随机 UUID `instanceId`，在该进程生命周期内保持不变，进程重启后重新生成。
+- 每个实例在 RabbitMQ 的共享 direct exchange 下声明一条 non-durable、exclusive、auto-delete 的实例 request queue，并用 `instanceId` 派生的 routing key 精确寻址。
+- Redis 记录 device 当前连接 owner；接收调用的实例拥有 daemon SSE 时直接发送，否则通过 RabbitMQ RPC 调用 owner 实例。
+- 同一 device 的 owner lease 有效时保留旧 SSE 连接并拒绝新连接；lease 过期后才允许新连接注册。
+- owner lease TTL 为 30 秒且每 10 秒续期；owner 记录以随机 `connectionId` 配合 `instanceId` 对续期、释放和投递执行 fencing 校验。
+- 跨实例控制调用使用按 owner `instanceId` 精确寻址的 RabbitMQ RPC。
+- RabbitMQ RPC 使用一个共享 direct exchange、每实例一条 request queue 和 Direct Reply-to；不在 Redis 注册 RPC endpoint，也不声明实例 response queue。
+- RabbitMQ Java RPC client 管理 reply-to、correlation、response waiter 与 timeout；AMQP `type` 标识版本化 RPC method，body 只包含强类型方法参数。
+- RPC publish 使用 `mandatory` 与 publisher confirm，设置 message expiration 和 AMQP 绝对 deadline header，且不自动重试 publish 或 invocation。
+- owner 校验当前 device owner 与 `connectionId` 并成功写入 daemon SSE 后返回 dispatch RPC response；该 response 只确认投递，不等待 daemon 最终结果。
+- dispatch RPC timeout 为 5 秒；超时、连接失败或返回 stale owner 时不重查 owner、不重试，并让原调用失败。
+- 跨实例 dispatch 标识 `originInstanceId`；daemon 最终结果先返回 connection owner，再由 owner 通过独立 RabbitMQ RPC 转发至 origin 的 operation waiter。
+- connection owner 在 origin 接受结果或判定重复后才确认 daemon；结果无法转发时向 daemon 返回可重试错误，由 daemon 重发同一结果。
+- server 进程内只保存本实例实际拥有的 socket、请求 waiter 和活动 stream handle；实例失败后允许调用方重试。
+- 文件传输生命周期与进度状态例外地只存于 Redis，不在 server 进程内维护第二份状态。
+- owning server 实例故障时，daemon 重连后尽力把仍存在的 running transfer 标记为 failed。
+- SSE 断线不直接结束已经下发的调用，调用结果由独立 POST 回传。
+- 文件字节通过独立的 HTTP 原始流传输。
+- 接受 `launch_file_transfer` 的实例固定为 coordinator/relay；它通过本地直发或 RabbitMQ RPC fallback 协商两端 daemon，随后让两端内容流直接连接该实例。
+- 常见亲和命中路径中 coordinator 与两端连接 owner 是同一实例，不使用 RabbitMQ；跨实例时 RabbitMQ RPC 只承载控制请求与回应，不承载文件字节。
+- daemon 文件内容请求携带 `relayInstanceId`，网关据此精确路由到固定 coordinator；coordinator 不可用时传输失败且不迁移 relay。
+- server 侧 SSE 发送成功即视为传输成功，不要求 daemon 发送收件确认。
+- 未在操作超时前收到结果 POST 时，server 重传同一操作。
+- 接受超时重传可能造成同一操作重复执行。
+- 每次投递等待结果 10 秒，首次超时后使用相同 operation ID 重传一次。
+- 重传后再等待 10 秒；仍无结果时，原调用失败。
+- 第一个合法结果完成调用，后续相同 operation ID 的结果 POST 返回 HTTP 409。
+- operation SSE 事件使用包含版本、operation ID、设备 ID、操作类型和载荷的统一 JSON 信封。
+- 结果 POST 使用 success/failure 判别联合和稳定错误码。
+- 请求级 MCP SSE response 被关闭时，server 停止等待，重新查询当前 device owner，并只向当前 owner 发送一次不确认、不重试的尽力取消控制事件；单 JSON 请求断连不视为 MCP 协议取消。
+- daemon 只取消尚未开始的 operation，不终止已启动的终端进程。
+- 核心传输路线已确定，可以进入实施规划。

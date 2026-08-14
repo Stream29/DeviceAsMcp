@@ -1,0 +1,17 @@
+.git
+.gradle
+.idea
+.kotlin
+.env
+.env.*
+AGENTS.md
+README.md
+checklist
+kanban
+shared-context
+compose*.yaml
+kotlin-js-store/*
+!kotlin-js-store/wasm/
+kotlin-js-store/wasm/*
+!kotlin-js-store/wasm/yarn.lock
+**/build

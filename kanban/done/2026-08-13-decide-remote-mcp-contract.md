@@ -1,0 +1,167 @@
+# Task Tree
+
+- [done] 确定 remote MCP 与设备间文件传输边界
+  - [done] 确定 MCP Streamable HTTP 传输模式
+    - [done] 采用 2026-07-28 POST-only 传输
+    - [done] 不使用协议级 session
+    - [done] 不开放独立 GET stream
+    - [done] 仅使用单 JSON 或请求级 SSE 响应
+  - [done] 提取 MCP OAuth 规范要求
+    - [done] 每次请求使用 Bearer access token
+    - [done] 发布 protected-resource metadata
+    - [done] 发布 authorization-server metadata
+    - [done] 使用 resource 与 audience 绑定
+    - [done] 遵循 OAuth 状态码与 challenge
+  - [done] 确定 MCP client 注册机制
+    - [done] 支持 Client ID Metadata Documents
+    - [done] 支持预注册 client
+    - [done] 兼容 Dynamic Client Registration
+  - [done] 确定 auth key 与 OAuth access token 的关系
+    - [done] 建模为授权服务器签发的长期 opaque access token
+    - [done] 使用 Authorization Bearer
+    - [done] 绑定统一 remote MCP resource audience
+    - [done] 支持用户撤销
+  - [done] 确定 remote MCP canonical URI
+    - [done] 所有用户共用 `/mcp`
+    - [done] 从验证后的 token 解析用户
+    - [done] 网关可按用户做尽力亲和
+    - [done] 用户亲和不作为正确性前提
+  - [done] 确定 MCP 请求的 JSON 与 SSE 选择策略
+    - [done] 无需 progress notification 时优先返回 JSON
+    - [done] 仅需发送请求相关进度时使用请求级 SSE
+    - [done] 单 JSON 请求断连不视为 MCP 协议取消
+  - [done] 确定文件内容不经过 MCP client
+  - [done] 确定设备间文件传输工具形状
+    - [done] 使用 launch_file_transfer
+    - [done] 使用 file_transfer_status
+    - [done] 使用 cancel_file_transfer
+  - [done] 确定文件传输 session 语义
+    - [done] launch 返回 transfer ID
+    - [done] launch 仅在远端预检通过后返回
+    - [done] 预检失败不创建 transfer ID
+    - [done] launch 成功后不再绑定原 MCP call 生命周期
+    - [done] status 仅返回总体摘要
+    - [done] cancel 停止活动传输但保留已写入目标内容
+    - [done] cancel 停止后立即删除 Redis Hash
+  - [done] 确定文件夹传输承载格式
+    - [done] 先发送单个 JSON manifest 文档
+    - [done] manifest 使用独立 HTTP 请求
+    - [done] manifest 超出上限时拒绝传输
+    - [done] manifest JSON 请求体上限为 16 MiB
+    - [done] 校验完整清单后创建目标内容
+    - [done] 每个普通文件使用独立内容流
+    - [done] 按 manifest 顺序严格串行传输
+    - [done] 单文件失败后从 byte zero 使用新完整流重试一次
+    - [done] 重试前截断该目标文件
+    - [done] 重试仍失败时停止 transfer 并标记 failed
+    - [done] 不使用 tar 或自定义复用字节流
+  - [done] 确定文件路径与链接语义
+    - [done] destinationPath 表示最终目标路径
+    - [done] 不隐式追加源 basename
+    - [done] 跳过符号链接和 junction
+    - [done] 不跟随或重建链接
+    - [done] 目标平台不支持或冲突的条目跳过
+    - [done] 跳过后继续传输
+    - [done] 跳过条目不计入成功文件数
+  - [done] 确定文件流鉴权
+    - [done] 复用 daemon 现有设备凭据
+    - [done] 首版不签发单流 capability token
+  - [done] 确定文件内容流形状
+    - [done] 每次尝试使用一个完整 octet-stream body
+    - [done] 不定义应用层 chunk、offset 或序号
+    - [done] 不定义自定义二进制 framing
+    - [done] 使用 HTTP/Ktor 流式背压
+  - [done] 确定文件内容完整性校验
+    - [done] 源与目标边传边计算 SHA-256
+    - [done] 源与目标同时统计字节数
+    - [done] server 比较 digest 与字节数
+    - [done] 不一致按文件尝试失败处理
+  - [done] 确定文件传输进度语义
+    - [done] 每个 transfer 使用一个 Redis Hash
+    - [done] `meta:*` 只保存 running/failed 与错误
+    - [done] `file:<relativePath>` 字段保存逐文件 success
+    - [done] 成功完成后删除 Hash
+    - [done] Hash 缺失表示 completed 或 not started，二者不区分
+    - [done] cancel 后删除 Redis Hash
+    - [done] 使用 Redis 原生 key expiration
+    - [done] TTL 为 30 分钟
+    - [done] launch 时设置 TTL
+    - [done] 每次进度或状态更新后刷新完整 TTL
+    - [done] 不发送 Redis TTL 保活心跳
+    - [done] 不写入字节级进度
+    - [done] 允许 running Hash 在活动传输中到期
+    - [done] Redis 是 transfer 状态唯一事实来源
+    - [done] server 进程内不维护第二份 transfer 状态
+    - [done] Hash 缺失时 cancel 返回不存在
+    - [done] Hash 缺失时不尝试取消活动流
+  - [done] 确定 server 实例故障收敛
+    - [done] daemon 重连后尽力报告失败
+    - [done] 仅把现存 running Hash 原子更新为 failed
+    - [done] 使用 SERVER_INSTANCE_LOST 错误码
+    - [done] 失败更新后刷新 30 分钟 TTL
+    - [done] Hash 已缺失时不重建
+  - [done] 确定目标落盘方式
+    - [done] 最终目标路径已存在时启动前拒绝
+    - [done] 直接写入最终目标路径
+    - [done] 不使用临时路径或原子重命名
+    - [done] 失败或取消后保留部分目标内容
+  - [done] 确定 launch 远端预检
+    - [done] 两台设备必须在线
+    - [done] 源路径必须存在且可读
+    - [done] 目标路径必须不存在
+    - [done] 目标父目录必须可写
+  - [done] 确定文件元数据策略
+    - [done] 仅传文件内容与目录结构
+    - [done] 不保留时间戳、所有者、权限、可执行位或 ACL
+  - [done] 更新核心传输任务
+  - [done] 更新顶层实施任务树
+  - [done] 记录确认后的项目决策
+
+# Details
+
+- 作为 `2026-08-13-decide-core-transport-contracts.md` 的子任务。
+- remote MCP 采用协议版本 `2026-07-28` 的 POST-only Streamable HTTP。
+- 该版本不使用 `Mcp-Session-Id`、独立 GET stream 或 `Last-Event-ID` 恢复。
+- remote MCP 的 OAuth 流程采用同版本 Authorization 规范，而不只是增加一个 Bearer header。
+- MCP server 作为 OAuth 2.1 resource server，发布 protected-resource metadata，并通过授权服务器 metadata 供 client 发现。
+- OAuth access token 通过 `Authorization: Bearer` 在每次请求中传递，且不得出现在 URI query 中。
+- 授权和 token 请求使用 remote MCP canonical URI 作为 `resource`，server 校验 token audience。
+- MCP client 注册同时支持 Client ID Metadata Documents、预注册和 Dynamic Client Registration。
+- 管理面板生成的 auth key 是本项目授权服务器签发、可撤销的长期 opaque access token，通过 `Authorization: Bearer` 使用。
+- 所有用户共用 canonical remote MCP URI `/mcp`，该 URI 同时作为 OAuth resource 标识。
+- 网关先验证 `/mcp` 请求的 access token，并可按解析出的用户做尽力亲和；任意实例都能接收调用，用户亲和不承担正确性。
+- MCP request 无需发送 progress notification 时优先返回单 JSON；仅在需要 progress notification 时使用请求级 SSE。
+- 只有关闭请求级 SSE response stream 才构成该版本定义的传输级取消；单 JSON 请求断连不视为 MCP 协议取消。
+- 文件工具改为从源设备路径向目标设备路径传输文件或文件夹。
+- 文件内容不经过 MCP client。
+- 文件传输工具为 `launch_file_transfer`、`file_transfer_status` 和 `cancel_file_transfer`。
+- `launch_file_transfer` 先确认两台设备在线、源路径存在且可读、目标路径不存在且父目录可写；全部通过后才创建 session 并返回 transfer ID，失败时直接返回 launch error。
+- launch 成功后，传输继续执行且不再绑定原 MCP call 生命周期。
+- `file_transfer_status` 只返回总体摘要和成功文件数，不返回逐文件路径或 map。
+- `cancel_file_transfer` 停止活动传输且保留已经写入的目标内容；停止完成后立即删除 Redis Hash。
+- 三个文件传输工具都返回单 JSON response。
+- 文件夹 manifest 使用独立 HTTP 请求承载的单个 JSON 文档，请求体上限为 16 MiB；超过上限时拒绝整个传输。
+- 目标 daemon 收到并校验完整 manifest 后，按清单顺序严格串行传输普通文件，同一 transfer 同时只有一个文件内容流。
+- 单文件内容流失败时，目标端先截断该文件，再从 byte zero 使用新的完整内容流重试一次；再次失败则停止整个 transfer，并把主状态设为 `failed`。
+- `destinationPath` 直接表示最终文件或文件夹路径，不隐式追加源 basename。
+- 遇到符号链接、junction 或其他文件系统链接时跳过，不跟随且不在目标设备重建。
+- manifest 条目不受目标文件系统支持，或按目标路径及大小写规则发生冲突时，跳过该条目并继续；跳过项不计入成功文件数。
+- daemon 的独立文件内容 HTTP 请求复用其现有设备凭据，首版不额外签发单流 capability token。
+- 每次文件尝试使用一个完整 `application/octet-stream` HTTP body，不定义应用层 chunk、offset、序号或自定义 framing，并依赖 HTTP/Ktor 流式背压。
+- 每次文件尝试由源和目标 daemon 边传边计算 SHA-256 与字节数，server 在完成后比较；任一不一致都按文件尝试失败并进入既定的一次重试。
+- server 为每个 transfer 使用一个 Redis Hash；`meta:*` 只保存 `running`/`failed` 与可选错误，`file:<relativePath>` 字段保存逐文件 `success`。
+- Redis Hash 是 transfer 生命周期与进度的唯一事实来源，server 进程内不维护第二份 transfer 状态。
+- 成功完成后删除 Redis Hash；查询不到 Hash 时只知道传输已完成或从未启动，不区分二者，也不区分记录已经过期。
+- `cancel_file_transfer` 查询不到 Redis Hash 时返回不存在，且不尝试通过进程内状态取消仍可能活动的文件流。
+- launch 时为 Redis Hash 设置 30 分钟 TTL，每次进度或状态更新后刷新为完整 30 分钟。
+- 不为 Redis TTL 发送心跳或写入字节级进度；单个文件流超过 30 分钟且没有状态更新时，允许仍在运行的 Hash 过期。
+- owning server 实例故障导致活动流断开时，daemon 重连后向新实例尽力报告；新实例只把仍存在的 `running` Hash 原子更新为 `failed/SERVER_INSTANCE_LOST` 并刷新 30 分钟 TTL，Hash 已缺失时不重建。
+- 最终目标路径已存在时，在写入任何内容前拒绝整个传输。
+- 目标 daemon 直接写入最终路径，不使用临时路径或原子重命名；失败或取消后保留部分文件和已创建目录。
+- 只传输文件内容和目录结构，不保留源时间戳、所有者、权限、可执行位或 ACL。
+- daemon 与 server 之间的文件字节使用独立 HTTP 原始流。
+- 接受 `launch_file_transfer` 的实例固定为 transfer coordinator 和 byte relay。
+- coordinator 分别通过本地直发或 RabbitMQ RPC fallback 调用源、目标 device owner；协商完成后，两端 daemon 的文件内容流都直接连接 coordinator。
+- 常见情况下 coordinator 与两端 owner 是同一实例，无需 RabbitMQ；跨实例时 RabbitMQ 仅承载控制消息与回应，不承载文件字节。
+- daemon 文件内容请求携带 `relayInstanceId`，网关据此精确路由至固定 coordinator；coordinator 不可用时传输失败，不迁移活动 relay。
+- remote MCP 与文件传输路线已确定，可以进入实施规划。

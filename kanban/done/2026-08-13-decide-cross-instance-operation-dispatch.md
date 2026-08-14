@@ -1,0 +1,124 @@
+# Task Tree
+
+- [done] 确定跨实例设备操作投递
+  - [done] 确定本地直发加 RabbitMQ RPC fallback
+  - [done] 将用户亲和降级为路由优化
+  - [done] 确定 server 实例身份与发现
+    - [done] 每次 server 进程启动生成随机 UUID instanceId
+    - [done] instanceId 在进程生命周期内不变
+    - [done] 每次进程重启生成新 instanceId
+    - [done] 使用 RabbitMQ routing key 精确寻址 instanceId
+    - [done] 每实例声明一条专属 request queue
+    - [done] 不在 Redis 注册内部 RPC endpoint
+  - [done] 确定 Redis 设备连接 owner 记录
+    - [done] 使用 Redis 查找 device owner 与结果 origin instance
+    - [done] 使用随机 connectionId 作为连接 fencing token
+    - [done] owner 记录保存 instanceId 与 connectionId
+    - [done] 续期和释放使用 instanceId、connectionId 原子 CAS
+    - [done] 投递前校验本地 connectionId 与当前 owner
+    - [done] owner TTL 为 30 秒
+    - [done] owner 每 10 秒续期
+    - [done] owner lease 有效时旧连接优先
+    - [done] owner lease 有效时拒绝新连接
+    - [done] owner lease 过期后允许新连接注册
+  - [done] 确定 RabbitMQ 跨实例 RPC 协议
+    - [done] 使用 owner instanceId 精确寻址
+    - [done] 使用一个 RabbitMQ direct exchange
+    - [done] 使用非持久 exclusive auto-delete 实例 request queue
+    - [done] 使用 RabbitMQ Direct Reply-to
+    - [done] 使用 RabbitMQ Java RPC client 管理 correlation 与等待
+    - [done] 在进程内复用 target-specific RabbitMQ RPC client
+    - [done] 使用 AMQP type 区分版本化 RPC method
+    - [done] RPC payload 只保存强类型方法参数
+    - [done] targetInstanceId 只进入 routing key
+    - [done] 设置 mandatory 与 publisher confirm
+    - [done] 目标 queue 不存在时立即失败
+    - [done] 请求设置 message expiration 与绝对 deadline header
+    - [done] 不声明实例 response queue
+    - [done] 不自动重试 publish 或 RPC invocation
+    - [done] 确定请求方法与幂等键
+      - [done] 定义 dispatch-operation.v1
+      - [done] 定义 forward-operation-result.v1
+      - [done] 定义 prepare-file-source.v1
+      - [done] 定义 prepare-file-destination.v1
+      - [done] 定义 cancel-file-transfer.v1
+      - [done] 定义单向 cancel-operation.v1
+      - [done] 除 cancel-operation.v1 外均使用 Direct Reply-to
+      - [done] dispatch context 标识 originInstanceId
+      - [done] operation RPC 使用 operationId
+      - [done] file-transfer RPC 使用 transferId
+    - [done] dispatch RPC timeout 为 5 秒
+    - [done] dispatch RPC 失败时不重试
+    - [done] stale owner 时不重查或重试
+  - [done] 确定跨实例 delivery 回执
+    - [done] owner 先校验 device owner 与 connectionId
+    - [done] owner 成功写入 daemon SSE 后返回 RPC response
+    - [done] RPC response 只确认传输投递
+    - [done] dispatch RPC 不等待 daemon 最终结果
+  - [done] 确定 daemon 结果跨实例回程
+    - [done] daemon 最终结果先返回 connection owner
+    - [done] owner 通过独立 RabbitMQ RPC 转发给 origin
+    - [done] operation waiter 保留在 origin
+    - [done] origin 接受或判定重复后才确认 daemon
+    - [done] 转发失败时向 daemon 返回可重试错误
+    - [done] daemon 重发同一结果
+  - [done] 确定取消消息跨实例路由
+    - [done] 取消时重新查询当前 device owner
+    - [done] 只向当前 owner 发送一次尽力取消
+    - [done] 不向原投递 owner 额外发送
+    - [done] 取消不等待确认且不重试
+  - [done] 确定文件 relay 实例路由
+    - [done] 接受 launch 的实例固定为 coordinator/relay
+    - [done] coordinator 查询源与目标 device owner
+    - [done] 本地 owner 直接调用
+    - [done] 远端 owner 通过 RabbitMQ RPC 请求并把响应交回 coordinator
+    - [done] 两端内容流最终连接 coordinator
+    - [done] 文件字节不经过 RabbitMQ 或 owner 实例
+    - [done] 常见路径中 coordinator 与两个 owner 为同一实例
+    - [done] 仅跨实例 owner leg 使用 RabbitMQ RPC fallback
+    - [done] 内容流携带 relayInstanceId
+    - [done] 网关按 relayInstanceId 精确路由到 coordinator
+    - [done] coordinator 不可用时传输失败
+  - [done] 更新核心传输任务
+  - [done] 更新顶层实施任务树
+  - [done] 记录确认后的项目决策
+
+# Details
+
+- 作为 `2026-08-13-decide-core-transport-contracts.md` 的子任务。
+- 任意 server 实例都可以接受 remote MCP call。
+- 接收调用的实例与持有目标 daemon SSE 长连接的实例可能不同。
+- 每个 server 进程启动时生成随机 UUID `instanceId`；该 ID 在进程生命周期内保持不变，进程重启后重新生成。
+- 每个实例在 RabbitMQ 的共享 direct exchange `device_as_mcp.instance_rpc.v1` 下声明一条名为 `device_as_mcp.instance_rpc.<instanceId>` 的专属 request queue，并绑定 routing key `instance.<instanceId>`。
+- 实例 request queue 为 non-durable、exclusive、auto-delete；实例连接消失后由 RabbitMQ 清理。
+- Redis 只保存目标 device 当前实际连接 owner，不保存内部 RPC endpoint；RabbitMQ routing key 承担 `instanceId` 精确寻址。
+- 同一 device 只接受一个有效 owner lease；lease 有效时旧 SSE 连接优先并拒绝后来连接，lease 过期后才允许新连接注册。
+- owner lease TTL 为 30 秒，每 10 秒续期。
+- owner 记录包含 `instanceId` 与随机 `connectionId`；续期、释放通过二者执行 Redis 原子 CAS，投递前也必须确认本地连接仍匹配当前 owner。
+- 跨实例控制面使用 RabbitMQ RPC；目标实例由 routing key 精确寻址，响应使用 Direct Reply-to。
+- 使用 RabbitMQ Java RPC client 管理 `replyTo`、`correlationId`、response waiter 与 timeout，不声明实例 response queue。
+- server 进程内复用按目标 `instanceId` 区分的 RabbitMQ RPC client，并在进程停止时统一关闭。
+- RPC method 通过 AMQP `type` 表示，request body 只携带该 method 所需的强类型参数。
+- 已定义 `dispatch-operation.v1`、`forward-operation-result.v1`、`prepare-file-source.v1`、`prepare-file-destination.v1`、`cancel-file-transfer.v1` 和 `cancel-operation.v1`。
+- 除 `cancel-operation.v1` 外，上述方法均通过 Direct Reply-to 返回响应；`cancel-operation.v1` 是不创建 response waiter 的单向尽力控制消息。
+- `targetInstanceId` 只编码在 RabbitMQ routing key 中，不重复写入业务 payload；`originInstanceId` 只在 `dispatch-operation.v1` 中作为异步结果回程所需的业务字段。
+- RPC publish 使用 `mandatory` 与 publisher confirm；目标实例 queue 不存在时按 unroutable 立即失败。
+- 请求同时携带由剩余 deadline 得出的 message expiration 与 AMQP 绝对 deadline header；目标实例拒绝已过期请求。
+- RabbitMQ publish 与 RPC invocation 都不自动重试。
+- daemon SSE 在本实例时直接发送；不在本实例时通过 RabbitMQ RPC 调用 owner 实例。
+- owner 校验当前 device owner 与 `connectionId` 并成功写入 daemon SSE 后，才返回 dispatch RPC response；该 response 只作为传输投递回执，不等待 daemon 最终结果。
+- dispatch RPC timeout 为 5 秒；超时、连接失败或返回 stale owner 时不重查 owner、不重试，并让原调用失败。
+- 跨实例 dispatch context 标识 `originInstanceId`；daemon 最终结果先返回 connection owner，再由 owner 通过独立 RabbitMQ RPC 转发至 origin，operation waiter 始终保留在 origin。
+- connection owner 只有在 origin 接受转发结果或判定结果重复后才确认 daemon 的结果 POST；无法转发时向 daemon 返回可重试错误，由 daemon 重发同一结果。
+- 取消 operation 时重新查询 Redis 中的当前 device owner，只向当前 owner 发送一次尽力取消；不额外发送给原投递 owner，不等待确认且不重试。
+- 用户级 hash 亲和仅用于提高本地命中率，不再是正确性前提。
+- server 进程内仍只持有本实例实际拥有的 socket、HTTP waiter 和活动 stream handle。
+- 对文件传输，接受 `launch_file_transfer` 的实例 A 固定为该 transfer 的 coordinator 与 byte relay。
+- A 分别解析源、目标 device owner；owner 与 A 相同时直接调用，不同时通过 RabbitMQ RPC 调用 owner 实例并把响应返回 A。
+- 协商完成后，源和目标 daemon 的独立内容 HTTP 流都连接到 A，由 A 直接中继字节；RabbitMQ 与 owner 实例只参与跨实例控制面，不承载文件字节。
+- daemon 的文件内容请求携带 A 的 `relayInstanceId`，由网关精确路由至 A；A 不可用时传输失败，不迁移活动 relay。
+- 常见情况下 A、源 owner、目标 owner 是同一实例，整条路径不经过 RabbitMQ；RabbitMQ RPC 主要处理扩缩容或 hash 变化期间的跨实例 owner leg。
+- device owner 与 operation 结果 origin instance 都通过 Redis 查找；Redis key 命名和记录清理属于实现期细节，不阻塞开发。
+- operation RPC 使用 `operationId` 作为自然幂等键，文件传输 RPC 使用 `transferId`；具体 request/response 字段随对应协议切片实现。
+- 结果转发沿用调用剩余 deadline；daemon 结果重发与结果路由记录清理在实现时按该 deadline 收敛，不作为开发前置决策。
+- 跨实例投递路线已确定，可以进入实施规划。

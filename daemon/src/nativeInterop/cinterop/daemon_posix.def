@@ -1,0 +1,270 @@
+package = io.github.stream29.mcp.device.daemon.posix
+
+headers = errno.h fcntl.h signal.h stdlib.h sys/types.h sys/wait.h unistd.h
+linkerOpts = -lutil
+
+---
+
+#if defined(__APPLE__)
+#include <util.h>
+#else
+#include <pty.h>
+#endif
+
+typedef struct damcp_posix_process {
+    pid_t pid;
+    int input_fd;
+    int output_fd;
+    int error_fd;
+} damcp_posix_process;
+
+static inline void damcp_close_fd_value(int fd) {
+    if (fd < 0) return;
+    while (close(fd) == -1 && errno == EINTR) {
+    }
+}
+
+static inline void damcp_close_pipe(int descriptors[2]) {
+    damcp_close_fd_value(descriptors[0]);
+    damcp_close_fd_value(descriptors[1]);
+    descriptors[0] = -1;
+    descriptors[1] = -1;
+}
+
+static inline int damcp_make_pipe(int descriptors[2]) {
+    if (pipe(descriptors) == -1) return errno;
+    return 0;
+}
+
+static inline int damcp_make_close_on_exec(int fd) {
+    int flags = fcntl(fd, F_GETFD);
+    if (flags == -1) return errno;
+    if (fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == -1) return errno;
+    return 0;
+}
+
+static inline int damcp_make_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags == -1) return errno;
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) return errno;
+    return 0;
+}
+
+static inline void damcp_report_exec_failure(int status_fd, int error) {
+    const unsigned char *data = (const unsigned char *)&error;
+    size_t remaining = sizeof(error);
+    while (remaining > 0) {
+        ssize_t written = write(status_fd, data, remaining);
+        if (written > 0) {
+            data += written;
+            remaining -= (size_t)written;
+        } else if (written == -1 && errno == EINTR) {
+            continue;
+        } else {
+            break;
+        }
+    }
+}
+
+static inline int damcp_read_exec_status(int fd) {
+    int child_error = 0;
+    unsigned char *data = (unsigned char *)&child_error;
+    size_t remaining = sizeof(child_error);
+    while (remaining > 0) {
+        ssize_t count = read(fd, data, remaining);
+        if (count == 0) return 0;
+        if (count > 0) {
+            data += count;
+            remaining -= (size_t)count;
+            continue;
+        }
+        if (errno == EINTR) continue;
+        return errno;
+    }
+    return child_error == 0 ? EIO : child_error;
+}
+
+static inline int damcp_spawn_posix(
+    char *const argv[],
+    int use_pty,
+    damcp_posix_process *result
+) {
+    int input_pipe[2] = {-1, -1};
+    int output_pipe[2] = {-1, -1};
+    int error_pipe[2] = {-1, -1};
+    int status_pipe[2] = {-1, -1};
+    int master = -1;
+    int spawn_error = 0;
+    pid_t pid;
+
+    if (result == NULL || argv == NULL || argv[0] == NULL) return EINVAL;
+    result->pid = -1;
+    result->input_fd = -1;
+    result->output_fd = -1;
+    result->error_fd = -1;
+
+    spawn_error = damcp_make_pipe(status_pipe);
+    if (spawn_error != 0) goto fail;
+    spawn_error = damcp_make_close_on_exec(status_pipe[1]);
+    if (spawn_error != 0) goto fail;
+
+    if (use_pty) {
+        pid = forkpty(&master, NULL, NULL, NULL);
+        if (pid == -1) {
+            spawn_error = errno;
+            goto fail;
+        }
+        if (pid == 0) {
+            int child_error;
+            damcp_close_fd_value(status_pipe[0]);
+            execvp(argv[0], argv);
+            child_error = errno;
+            damcp_report_exec_failure(status_pipe[1], child_error);
+            _exit(127);
+        }
+
+        damcp_close_fd_value(status_pipe[1]);
+        status_pipe[1] = -1;
+        spawn_error = damcp_read_exec_status(status_pipe[0]);
+        damcp_close_fd_value(status_pipe[0]);
+        status_pipe[0] = -1;
+        if (spawn_error != 0) {
+            int ignored;
+            damcp_close_fd_value(master);
+            while (waitpid(pid, &ignored, 0) == -1 && errno == EINTR) {
+            }
+            return spawn_error;
+        }
+
+        result->input_fd = dup(master);
+        if (result->input_fd == -1) {
+            spawn_error = errno;
+            kill(-pid, SIGKILL);
+            kill(pid, SIGKILL);
+            damcp_close_fd_value(master);
+            while (waitpid(pid, NULL, 0) == -1 && errno == EINTR) {
+            }
+            return spawn_error;
+        }
+        result->pid = pid;
+        result->output_fd = master;
+    } else {
+        spawn_error = damcp_make_pipe(input_pipe);
+        if (spawn_error != 0) goto fail;
+        spawn_error = damcp_make_pipe(output_pipe);
+        if (spawn_error != 0) goto fail;
+        spawn_error = damcp_make_pipe(error_pipe);
+        if (spawn_error != 0) goto fail;
+
+        pid = fork();
+        if (pid == -1) {
+            spawn_error = errno;
+            goto fail;
+        }
+        if (pid == 0) {
+            int child_error;
+            damcp_close_fd_value(status_pipe[0]);
+            setpgid(0, 0);
+            if (
+                dup2(input_pipe[0], STDIN_FILENO) == -1 ||
+                dup2(output_pipe[1], STDOUT_FILENO) == -1 ||
+                dup2(error_pipe[1], STDERR_FILENO) == -1
+            ) {
+                child_error = errno;
+                damcp_report_exec_failure(status_pipe[1], child_error);
+                _exit(127);
+            }
+            damcp_close_pipe(input_pipe);
+            damcp_close_pipe(output_pipe);
+            damcp_close_pipe(error_pipe);
+            execvp(argv[0], argv);
+            child_error = errno;
+            damcp_report_exec_failure(status_pipe[1], child_error);
+            _exit(127);
+        }
+
+        setpgid(pid, pid);
+        damcp_close_fd_value(status_pipe[1]);
+        status_pipe[1] = -1;
+        damcp_close_fd_value(input_pipe[0]);
+        input_pipe[0] = -1;
+        damcp_close_fd_value(output_pipe[1]);
+        output_pipe[1] = -1;
+        damcp_close_fd_value(error_pipe[1]);
+        error_pipe[1] = -1;
+        spawn_error = damcp_read_exec_status(status_pipe[0]);
+        damcp_close_fd_value(status_pipe[0]);
+        status_pipe[0] = -1;
+        if (spawn_error != 0) {
+            int ignored;
+            damcp_close_pipe(input_pipe);
+            damcp_close_pipe(output_pipe);
+            damcp_close_pipe(error_pipe);
+            while (waitpid(pid, &ignored, 0) == -1 && errno == EINTR) {
+            }
+            return spawn_error;
+        }
+
+        result->pid = pid;
+        result->input_fd = input_pipe[1];
+        result->output_fd = output_pipe[0];
+        result->error_fd = error_pipe[0];
+        input_pipe[1] = -1;
+        output_pipe[0] = -1;
+        error_pipe[0] = -1;
+    }
+
+    spawn_error = damcp_make_nonblocking(result->input_fd);
+    if (spawn_error == 0) spawn_error = damcp_make_nonblocking(result->output_fd);
+    if (spawn_error == 0 && result->error_fd >= 0) {
+        spawn_error = damcp_make_nonblocking(result->error_fd);
+    }
+    if (spawn_error != 0) {
+        kill(-result->pid, SIGKILL);
+        kill(result->pid, SIGKILL);
+        damcp_close_fd_value(result->input_fd);
+        damcp_close_fd_value(result->output_fd);
+        damcp_close_fd_value(result->error_fd);
+        while (waitpid(result->pid, NULL, 0) == -1 && errno == EINTR) {
+        }
+        result->pid = -1;
+        result->input_fd = -1;
+        result->output_fd = -1;
+        result->error_fd = -1;
+        return spawn_error;
+    }
+    return 0;
+
+fail:
+    damcp_close_pipe(input_pipe);
+    damcp_close_pipe(output_pipe);
+    damcp_close_pipe(error_pipe);
+    damcp_close_pipe(status_pipe);
+    return spawn_error == 0 ? EIO : spawn_error;
+}
+
+static inline int damcp_poll_posix(pid_t pid, int *exit_code) {
+    int status = 0;
+    pid_t observed;
+    if (pid <= 0 || exit_code == NULL) return -EINVAL;
+    observed = waitpid(pid, &status, WNOHANG);
+    if (observed == 0) return 0;
+    if (observed == -1) return -errno;
+    if (WIFEXITED(status)) {
+        *exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        *exit_code = 128 + WTERMSIG(status);
+    } else {
+        *exit_code = 1;
+    }
+    return 1;
+}
+
+static inline int damcp_terminate_posix(pid_t pid, int force) {
+    int signal_number;
+    if (pid <= 0) return EINVAL;
+    signal_number = force ? SIGKILL : SIGTERM;
+    if (kill(-pid, signal_number) == 0 || errno == ESRCH) return 0;
+    if (kill(pid, signal_number) == 0 || errno == ESRCH) return 0;
+    return errno;
+}

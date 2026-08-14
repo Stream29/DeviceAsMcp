@@ -4,3 +4,325 @@
 - Keep the root project free of source sets and platform targets.
 - Add concrete modules only for explicitly requested capabilities.
 - Declare shared plugin versions in `gradle/libs.versions.toml`.
+
+## Architecture
+
+- Build a daemon CLI with Kotlin/Native.
+- Target Linux x64, Linux ARM64, macOS ARM64, and Windows x64 daemon binaries.
+- Let the daemon CLI authenticate a user and connect the user's device to the server.
+- Let the daemon establish a persistent outbound SSE connection to receive server-initiated operations.
+- Let the daemon return operation results through ordinary HTTP requests.
+- Allow any server instance to accept a remote MCP call.
+- Generate a random UUID `instanceId` once at each server-process startup.
+- Keep the generated `instanceId` unchanged for that process lifetime and generate a new UUID after every process restart.
+- Use RabbitMQ for cross-instance control-plane RPC.
+- Declare one shared direct exchange named `device_as_mcp.instance_rpc.v1`.
+- Let each server process declare one instance-specific request queue when it starts.
+  - Name the queue `device_as_mcp.instance_rpc.<instanceId>`.
+  - Bind it to the shared exchange with routing key `instance.<instanceId>`.
+  - Make it non-durable, exclusive, and auto-delete.
+- Use RabbitMQ Direct Reply-to for RPC responses; do not declare instance-specific response queues.
+- Use the RabbitMQ routing key as the target-instance address; do not register internal RPC endpoints in Redis.
+- Set `mandatory` on cross-instance RPC requests so an absent target-instance queue fails as unroutable.
+- Use publisher confirms for cross-instance RPC publication.
+- Do not retry a cross-instance RPC publication or invocation automatically.
+- Set the RabbitMQ message expiration from the RPC's remaining deadline.
+- Carry an absolute deadline in an AMQP header on each cross-instance RPC request and reject expired requests at the target instance.
+- Use the RabbitMQ Java client's RPC support for reply-to, correlation, response waiting, and timeout handling.
+- Reuse a target-specific RabbitMQ RPC client within the server process and close all such clients when the process stops.
+- Keep cross-instance RPC business payloads strongly typed and limited to the parameters required by each RPC method.
+- Use the AMQP message type to identify the versioned RPC method instead of adding a generic channel field to the business payload.
+- Resolve instance ownership and operation-result routing through Redis before selecting the local fast path or RabbitMQ target instance.
+- Use operation IDs and transfer IDs as the natural idempotency keys for their corresponding RPC methods.
+- Use these versioned AMQP message types:
+  - `dispatch-operation.v1`.
+  - `forward-operation-result.v1`.
+  - `prepare-file-source.v1`.
+  - `prepare-file-destination.v1`.
+  - `cancel-file-transfer.v1`.
+  - `cancel-operation.v1`.
+- Use Direct Reply-to request/reply for every listed message type except `cancel-operation.v1`.
+- Publish `cancel-operation.v1` as a one-way best-effort control message without a reply waiter.
+- Address the target instance only through the RabbitMQ routing key; do not repeat `targetInstanceId` in an RPC business payload.
+- Carry `originInstanceId` only in `dispatch-operation.v1`, where the asynchronous operation result requires a return destination.
+- Keep each daemon's actual SSE socket only in the server instance that accepted that connection.
+- Store each connected device's current server-instance owner in Redis.
+- Allow at most one active SSE owner lease for each device.
+- Set the device owner lease TTL to 30 seconds.
+- Renew an active device owner lease every 10 seconds.
+- Store a random `connectionId` with the owner `instanceId`.
+- Require `instanceId` and `connectionId` to match in atomic Redis compare-and-set operations that renew or release an owner lease.
+- Require the local SSE connection's `connectionId` to match the current Redis owner record before dispatching a new operation through it.
+- Reject a later daemon SSE connection while the existing owner lease remains valid.
+- Allow a daemon connection to register after the previous owner lease expires.
+- Dispatch a device operation directly when the accepting instance owns the target daemon connection.
+- Call the owning server instance through RabbitMQ RPC when the accepting instance and daemon-connection owner differ.
+- Let the owner instance complete the dispatch RPC only after it has validated the current device owner and `connectionId` and successfully written the operation to the daemon SSE stream.
+- Treat that successful dispatch RPC response as the cross-instance transport delivery receipt; do not wait for the daemon's final operation result in that RPC.
+- Set the RabbitMQ dispatch RPC timeout to 5 seconds.
+- Do not retry a dispatch RPC after an RPC timeout, connection failure, or stale-owner response; fail the originating call.
+- Route a daemon's final operation result to its connection-owning server instance.
+- Allow a daemon's result POST to enter any server instance.
+- Let a non-owner ingress resolve the current connection owner in Redis and
+  forward the result to that owner through RabbitMQ RPC.
+- Let the connection owner forward that final result to the originating server instance through a separate RabbitMQ RPC.
+- Do not acknowledge the daemon's result POST until the originating instance has accepted the forwarded result or identified it as a duplicate.
+- Return a retryable response to the daemon when the result cannot be forwarded to the originating instance, and let the daemon resend the same result.
+- Keep the operation waiter on the originating server instance and complete it with the first valid forwarded result.
+- Use user-based gateway affinity only to improve local dispatch hit rate.
+- Do not rely on gateway affinity or a stable user hash for correctness.
+- Keep request waiters and active HTTP stream handles only in the server process that owns them.
+- Keep file-transfer lifecycle and progress state only in Redis rather than mirroring it in server-process memory.
+- When applying best-effort gateway affinity, use the user ID as the affinity key.
+- Allow callers to retry when an instance fails and loses its local request waiter or stream handle.
+- Do not bind an in-flight operation's lifetime to the daemon's SSE connection lifetime.
+- Treat a successful server-side SSE send as successful operation delivery.
+- Do not require a separate daemon receipt acknowledgement.
+- Wait up to 10 seconds for an operation result after each SSE delivery attempt.
+- Retransmit a timed-out operation once with the same operation ID.
+- Fail the originating call when no result arrives within 10 seconds after the retransmission.
+- Accept that timeout retries can execute the same operation more than once.
+- Complete an operation with its first valid result POST.
+- Return HTTP `409 Conflict` for later result POSTs with the same operation ID.
+- Relay file bytes through independent HTTP `application/octet-stream` requests.
+- Fail remote operations immediately when their target device is offline.
+- Build the server for the JVM.
+- Implement the JVM server with Ktor Server.
+- Use Ktor Client for client-side network communication.
+- Model shared wire protocols with `kotlinx.serialization` and sealed interfaces.
+- Finalize concrete wire-schema fields while implementing each protocol slice rather than treating the complete schema as a prerequisite for development.
+- Let the server expose each authenticated user's devices as remote MCP endpoints.
+- Support both interactive OAuth authorization and management-panel auth keys for remote MCP access.
+- Implement remote MCP against protocol revision `2026-07-28`.
+  - Expose one POST-only Streamable HTTP endpoint.
+  - Return HTTP `405 Method Not Allowed` for GET and DELETE requests to the MCP endpoint.
+  - Require clients to accept both `application/json` and `text/event-stream`.
+  - Accept one JSON-RPC request or notification per POST.
+  - Return HTTP `202 Accepted` without a body for an accepted notification.
+  - Return either one JSON response or a request-scoped SSE response for a request.
+  - Prefer a single JSON response whenever request-related progress notifications are not needed.
+  - Use a request-scoped SSE response only when the server needs to send request-related progress notifications before the final response.
+  - Do not issue `Mcp-Session-Id` and ignore it when received.
+  - Do not expose a standalone MCP GET stream.
+  - Ignore `Last-Event-ID` and do not implement resumable MCP SSE streams.
+  - Require and validate `MCP-Protocol-Version`, `Mcp-Method`, and applicable `Mcp-Name` headers against the JSON-RPC body.
+  - Validate the HTTP `Origin` header when present.
+  - Send `X-Accel-Buffering: no` on request-scoped SSE responses.
+- Carry OAuth access tokens in `Authorization: Bearer` on every remote MCP HTTP request.
+- Do not accept OAuth access tokens in URI query parameters.
+- Implement remote MCP OAuth authorization against protocol revision `2026-07-28`.
+  - Act as an OAuth 2.1 resource server.
+  - Use one canonical remote MCP resource URI ending in `/mcp` for all users.
+  - Publish OAuth 2.0 Protected Resource Metadata for that canonical resource URI.
+  - Identify the project's authorization server in the protected-resource metadata.
+  - Return an OAuth Bearer `WWW-Authenticate` challenge with `resource_metadata` when authorization is required.
+  - Publish authorization-server metadata through a standard discovery endpoint.
+  - Support Client ID Metadata Documents, pre-registered clients, and Dynamic Client Registration.
+  - Support authorization-code protection with PKCE and the `S256` challenge method.
+  - Accept the canonical remote MCP URI as the `resource` parameter in authorization and token requests.
+  - Issue and validate access tokens for that specific MCP resource audience.
+  - Reject missing, invalid, or expired OAuth access tokens with HTTP `401 Unauthorized`.
+  - Reject insufficient OAuth scopes with HTTP `403 Forbidden`.
+  - Do not pass the remote MCP access token through to daemon or upstream APIs.
+- Implement each management-panel auth key as a long-lived opaque access token issued by the project's authorization server.
+- Bind each auth-key access token to the canonical remote MCP resource audience.
+- Carry each auth-key access token in `Authorization: Bearer` on every remote MCP request.
+- Allow users to revoke auth-key access tokens from the management panel.
+- Grant both interactively obtained access tokens and auth-key access tokens full access to the owning account.
+- Resolve the user from the validated remote MCP access token.
+- Let the gateway authenticate each `/mcp` request and optionally use the derived user ID for best-effort affinity.
+- Build the management frontend with Compose Multiplatform for Wasm.
+- Let authenticated users manage their devices through the frontend.
+
+## Device Operation Delivery
+
+- Send every server-to-daemon operation as an SSE event named `operation`.
+  - Encode the event data as JSON.
+  - Include `version`, `operationId`, `deviceId`, `kind`, and `payload`.
+- Return daemon operation results through an HTTP POST discriminated union.
+  - Include the original `operationId`.
+  - Use `status: success` with a typed `result` payload.
+  - Use `status: failure` with a stable `errorCode`, a `message`, and optional `details`.
+- For an operation dispatched across server instances:
+  - Identify the originating server instance in the `dispatch-operation.v1` request.
+  - Return the dispatch RPC response after the owner writes the operation to daemon SSE.
+  - Return the daemon's final result to the connection owner.
+  - Forward the final result from the connection owner to the originating instance through RabbitMQ RPC.
+- When the originating remote MCP call is cancelled:
+  - Treat closure of its request-scoped SSE response stream as cancellation when that response form is used.
+  - Stop waiting for the operation result and stop its retransmission timer.
+  - Resolve the device's current connection owner from Redis at cancellation time.
+  - Send one best-effort cancellation control event referencing the original operation ID to that current owner.
+  - Do not additionally send the cancellation to the owner that originally received the operation.
+  - Do not require an acknowledgement or retry the cancellation event.
+  - Let the daemon cancel the operation only if local execution has not started.
+  - Ignore cancellation after local execution has started or completed.
+  - Keep an already launched terminal process alive.
+- Do not treat disconnection of a request using a single JSON response as MCP protocol cancellation.
+
+## Identity and Authorization
+
+- Own and maintain the user accounts and authorization server.
+- Support username-and-password login.
+- Support third-party OAuth login providers.
+- Integrate GitHub as the first third-party OAuth login provider.
+- Defer additional third-party OAuth login providers.
+- Implement ordinary server-side login sessions using established Ktor or Spring ecosystem patterns.
+
+## Daemon Enrollment
+
+- Support an installation command generated by the management frontend.
+  - Include a login token in the command.
+  - Let the user copy and run the command to install and authenticate the daemon.
+- Support guided installation from a downloaded CLI binary.
+  - Let the user run the binary directly.
+  - Authenticate the user through a browser during installation.
+
+## Local Permission Boundary
+
+- Run terminal commands and file operations with the permissions of the OS user that starts the daemon.
+
+## Remote MCP Tools
+
+- Expose `list_device`.
+- Expose `launch_terminal_session`.
+  - Require a device ID.
+  - Accept a command-line script.
+  - Accept an optional `tty` flag that defaults to `false`.
+  - Use ordinary process pipes when `tty` is `false` or omitted.
+  - Use a POSIX PTY on Linux and macOS when `tty` is `true`.
+  - Use ConPTY on Windows when `tty` is `true`.
+  - Wait for the command for up to two seconds.
+  - Return the final output and exit status directly when the command finishes within two seconds.
+  - Return a session ID and running status when the command is still running after two seconds.
+  - Keep the local process alive until it exits, regardless of MCP client or daemon-server connection lifetime.
+  - Keep a bounded in-memory output buffer in the daemon while its server connection is unavailable.
+    - Limit unread output to 256 KiB per session.
+    - Discard the oldest unread output when the limit is exceeded.
+    - Track whether truncation occurred and the number of discarded bytes.
+  - Do not apply an idle timeout.
+- Expose `terminal_session_input`.
+  - Route the call by session ID.
+  - Accept `stdin` as UTF-8 text.
+  - Accept an `eof` boolean that closes the session's standard input when true.
+- Expose `terminal_session_output`.
+  - Route the call by session ID.
+  - Let the caller poll incremental output for a background terminal session.
+  - Return immediately, including when the session is still running and has no unread output.
+  - Return non-TTY standard output and standard error in separate fields.
+  - Return and consume the currently unread output on each call.
+  - Report whether output was truncated and how many bytes were discarded.
+  - Retain an ended session and its unread output for 30 minutes after process exit.
+- Do not expose a dedicated terminal-session termination tool.
+  - Let the caller launch another command that uses the target operating system's process-control commands when termination is needed.
+- Replace `download_file` and `upload_file` with three device-to-device file transfer tools.
+- Expose `launch_file_transfer`.
+  - Require a source device ID and source path.
+  - Require a destination device ID and destination path.
+  - Interpret the destination path as the exact final path of the transferred file or folder.
+  - Do not append the source basename implicitly.
+  - Accept absolute paths and paths beginning with `~` on both devices.
+  - Expand a leading `~` using the corresponding daemon OS user's home directory.
+  - Transfer file or folder contents between the source and destination devices through the server.
+  - Do not pass file contents through the remote MCP client.
+  - Keep the server as a streaming relay without persisting transferred content.
+  - Before creating the transfer session, require both devices to be online.
+  - Before creating the transfer session, require the source path to exist and be readable.
+  - Before creating the transfer session, require the exact final destination path not to exist and its parent directory to be writable.
+  - Return a launch error without a transfer ID when any preflight check fails.
+  - Create an observable file-transfer session and return its transfer ID.
+  - Return the launch result as a single JSON response.
+- Expose `file_transfer_status`.
+  - Require a transfer ID.
+  - Return only an aggregate summary, without individual file paths or a per-file result map.
+  - Include the successful-file count while the Redis transfer Hash exists.
+  - Report `running` or `failed` when the Redis transfer Hash exists.
+  - Treat an absent Redis transfer Hash as ambiguous between completed and not started.
+  - Return the status as a single JSON response.
+- Expose `cancel_file_transfer`.
+  - Require a transfer ID.
+  - Treat the Redis transfer Hash as the only source of truth for whether the transfer is active.
+  - Return a not-found result and do not attempt cancellation when the Redis Hash is absent.
+  - Stop an active transfer without deleting destination content already written.
+  - Delete the Redis transfer Hash after the transfer has stopped.
+  - Return the cancellation result as a single JSON response.
+- Transfer a folder using a normalized manifest followed by one content stream per regular file.
+  - Encode the complete manifest as one JSON document in an independent HTTP request.
+  - Do not include the manifest in an operation result or RabbitMQ RPC payload.
+  - Limit the manifest JSON request body to 16 MiB.
+  - Reject the transfer when the manifest JSON request body exceeds 16 MiB.
+  - Express every manifest entry as a normalized relative path under the selected source folder.
+  - Skip symbolic links, junctions, and other filesystem link entries without following or recreating them.
+  - Validate every manifest path for containment under the destination root.
+  - On the destination daemon, skip entries whose names are unsupported by the local filesystem or collide under its path and case-sensitivity rules.
+  - Continue the transfer after skipping an incompatible or colliding manifest entry.
+  - Exclude skipped entries from the successful-file count.
+  - Create directories from manifest entries.
+  - Transfer regular files strictly serially in manifest order.
+  - Open only one regular-file content stream at a time within a transfer.
+  - When a regular-file content stream fails, truncate that destination file and retry it once from byte zero using a new complete content stream.
+  - Stop the entire transfer and mark it `failed` when the retry also fails.
+  - Do not automatically retry the same file more than once.
+  - Do not use a tar archive or a custom multiplexed byte stream.
+- Write transferred content directly to the final destination path.
+  - Do not use a temporary staging path or atomic final rename.
+  - Leave partially written files and created directories in place after failure or cancellation.
+- Transfer file contents and directory structure only.
+  - Do not preserve source timestamps, ownership, permissions, executable bits, or ACLs.
+- Relay file transfers through independent HTTP streams between each daemon and the server.
+- Let the server instance that accepts `launch_file_transfer` become that transfer's coordinator and byte relay.
+- Keep the same coordinator instance for the lifetime of the transfer.
+- Let the coordinator resolve both source and destination device-connection owners through Redis.
+- When the coordinator owns a required daemon connection, invoke that daemon locally.
+- When another instance owns a required daemon connection, invoke it through RabbitMQ RPC and receive its response on the coordinator.
+- After source and destination negotiation completes, let both daemon content streams terminate at the coordinator instance.
+- Include the coordinator's `relayInstanceId` in the daemon file-stream instructions.
+- Let the gateway route daemon file-content HTTP requests to the exact coordinator instance identified by `relayInstanceId`.
+- Fail the transfer when the fixed coordinator instance is unavailable; do not move an active transfer to another relay instance.
+- Relay file bytes through the coordinator instance; do not pass file bytes through RabbitMQ or through the daemon-connection owner instances.
+- Expect the coordinator, source owner, and destination owner to be the same instance in the common affinity-hit path.
+- Use RabbitMQ RPC only for the owner legs that cross an instance boundary, primarily during scaling, hash movement, or connection transition.
+- Transfer each regular-file attempt as one complete `application/octet-stream` HTTP body.
+  - Do not define application-level chunks, offsets, sequence numbers, or binary framing.
+  - Rely on HTTP and Ktor streaming backpressure.
+- Authenticate every independent daemon file-content HTTP request with that daemon's existing device credential.
+- Do not issue a separate per-stream capability token in the initial release.
+- Verify every regular-file attempt with streaming SHA-256 and byte counts.
+  - Let both source and destination daemons compute SHA-256 and byte count while streaming.
+  - Let the server compare the source and destination digest and byte count after the stream completes.
+  - Treat any digest or byte-count mismatch as a failed file attempt and apply the one-retry rule.
+- Maintain transfer progress as one Redis Hash per transfer ID.
+  - Treat this Redis Hash as the sole source of truth for transfer lifecycle and progress.
+  - Do not keep a second transfer-state copy in server-process memory.
+  - Store `running` or `failed` and optional error metadata in reserved `meta:*` fields.
+  - Record each successfully transferred file as `file:<relativePath> = success`.
+  - Delete the Redis Hash when the transfer completes successfully.
+  - Set the Redis key TTL to 30 minutes when the transfer is launched.
+  - Refresh the full 30-minute TTL after every progress or state update.
+  - Do not send a heartbeat or write byte-level progress solely to refresh the TTL.
+  - Allow a `running` transfer's Redis Hash to expire while a long file stream remains active.
+- When an owning server instance fails during a transfer:
+  - Let both daemons reconnect and make a best-effort failure report through the new owning server instance.
+  - Atomically change an existing `running` Redis Hash to `failed` with error code `SERVER_INSTANCE_LOST`.
+  - Refresh the existing Hash's TTL to 30 minutes after recording the failure.
+  - Do not recreate a Redis Hash that has already expired or been deleted.
+- Do not support resumable file transfers in the initial release.
+  - Let a successfully launched transfer continue independently of the originating MCP call.
+  - Treat an interrupted content stream as a failed file attempt and apply the one-retry rule.
+  - Leave destination content written before the interruption in place.
+
+## Backend Infrastructure
+
+- Use PostgreSQL, Redis, and RabbitMQ as backend middleware.
+- Use Redis for device ownership, leases, fencing, and ephemeral transfer state.
+- Use RabbitMQ for cross-instance control-plane RPC.
+- Provide a Docker Compose development environment for PostgreSQL, Redis, and RabbitMQ when backend development begins.
+- Reject production startup unless PostgreSQL, Redis, RabbitMQ, and HTTPS
+  public URLs are configured.
+- Expose process liveness separately from PostgreSQL, Redis, and RabbitMQ
+  readiness.
+- Run the JVM server as a non-root container user.
+- Provide a single-server production Compose topology with a Caddy HTTPS
+  gateway and persistent middleware volumes.
+- Do not scale the provided production Compose server until its gateway can
+  route relay requests by exact `X-Relay-Instance-Id`.
