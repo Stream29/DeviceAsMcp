@@ -24,7 +24,13 @@ fun main(args: Array<String>) = runBlocking {
                 val server = option(args, "--server") ?: "http://localhost:8080"
                 val token = option(args, "--token") ?: browserEnrollmentToken(client, server)
                 val name = option(args, "--name") ?: platformName()
-                enroll(client, server, token, name).also(store::save)
+                enroll(client, server, token, name).also { enrolled ->
+                    store.save(enrolled)
+                    if ("--no-run" in args) {
+                        println("enrolled ${enrolled.deviceName} (${enrolled.credential.deviceId.value})")
+                        return@runBlocking
+                    }
+                }
             }
             "run", null -> store.load() ?: error("Not enrolled. Run: device-as-mcp enroll --token <token>")
             else -> error(USAGE)
@@ -37,7 +43,7 @@ fun main(args: Array<String>) = runBlocking {
 }
 
 private const val USAGE =
-    "Usage: device-as-mcp [enroll --server URL [--token TOKEN] [--name NAME] | run]"
+    "Usage: device-as-mcp [enroll --server URL [--token TOKEN] [--name NAME] [--no-run] | run]"
 
 private fun option(args: Array<String>, name: String): String? {
     val index = args.indexOf(name)

@@ -125,6 +125,8 @@ private fun DevicePanel() {
     var authKeys by remember { mutableStateOf(emptyList<AuthKeySummary>()) }
     var createdKey by remember { mutableStateOf<String?>(null) }
     var installCommand by remember { mutableStateOf<String?>(null) }
+    var selectedInstallPlatform by remember { mutableStateOf(InstallPlatform.LINUX_X64) }
+    var deviceName by remember { mutableStateOf("my-device") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var serverAddress by remember { mutableStateOf(serverUrl()) }
@@ -207,6 +209,7 @@ private fun DevicePanel() {
                         value = serverAddress,
                         onValueChange = {
                             serverAddress = it
+                            installCommand = null
                             window.localStorage.setItem(SERVER_KEY, it.trimEnd('/'))
                         },
                         label = { Text("Server URL") },
@@ -219,8 +222,45 @@ private fun DevicePanel() {
                             Text(if (device.online) "online" else "offline")
                         }
                     }
+                    OutlinedTextField(
+                        value = deviceName,
+                        onValueChange = {
+                            deviceName = it
+                            installCommand = null
+                        },
+                        label = { Text("New device name") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text("Install platform")
+                    InstallPlatform.entries.forEach { platform ->
+                        if (platform == selectedInstallPlatform) {
+                            Button(
+                                onClick = {},
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(platform.displayName)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = {
+                                    selectedInstallPlatform = platform
+                                    installCommand = null
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(platform.displayName)
+                            }
+                        }
+                    }
                     Button(onClick = {
                         val token = accessToken ?: return@Button
+                        val normalizedServer = serverAddress.trimEnd('/')
+                        val normalizedName = deviceName.trim()
+                        val platform = selectedInstallPlatform
+                        if (normalizedServer.isBlank() || normalizedName.isBlank()) {
+                            error = "Server URL and device name are required"
+                            return@Button
+                        }
                         launchUi {
                             runCatching {
                                 val enrollment = apiPost<DeviceEnrollmentToken>(
@@ -228,15 +268,24 @@ private fun DevicePanel() {
                                     token,
                                     Unit,
                                 )
-                                installCommand =
-                                    "device-as-mcp enroll --server ${shellQuote(serverAddress.trimEnd('/'))} " +
-                                    "--token ${shellQuote(enrollment.token)} --name ${shellQuote("my-device")}"
+                                installCommand = platform.installCommand(
+                                    normalizedServer,
+                                    enrollment.token,
+                                    normalizedName,
+                                )
                             }.onSuccess {
                                 error = null
                             }.onFailure { error = it.message }
                         }
-                    }) { Text("Generate install command") }
+                    }) {
+                        Text("Generate ${selectedInstallPlatform.displayName} command")
+                    }
                     installCommand?.let {
+                        Text(
+                            "This command contains a single-use token that expires in 10 minutes. " +
+                                "It downloads and verifies the native daemon from GitHub.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                         Text(it, style = MaterialTheme.typography.bodySmall)
                         OutlinedButton(onClick = { copyText(it) }) { Text("Copy") }
                     }
@@ -451,10 +500,61 @@ private fun copyText(value: String) {
     window.navigator.clipboard.writeText(value)
 }
 
+private enum class InstallPlatform(
+    val displayName: String,
+    val releasePlatform: String,
+    val windows: Boolean = false,
+) {
+    LINUX_X64("Linux x64", "linux-x64"),
+    LINUX_ARM64("Linux ARM64", "linux-arm64"),
+    MACOS_ARM64("macOS Apple Silicon", "macos-arm64"),
+    WINDOWS_X64("Windows x64 (PowerShell)", "windows-x64", windows = true),
+    ;
+
+    fun installCommand(serverUrl: String, token: String, deviceName: String): String {
+        return if (windows) {
+            windowsInstallCommand(serverUrl, token, deviceName, releasePlatform)
+        } else {
+            unixInstallCommand(serverUrl, token, deviceName, releasePlatform)
+        }
+    }
+}
+
+private fun unixInstallCommand(
+    serverUrl: String,
+    token: String,
+    deviceName: String,
+    platform: String,
+): String =
+    "curl --proto '=https' --tlsv1.2 -fsSL ${shellQuote(POSIX_INSTALLER_URL)} | " +
+        "sh -s -- --server ${shellQuote(serverUrl)} --token ${shellQuote(token)} " +
+        "--name ${shellQuote(deviceName)} --platform ${shellQuote(platform)}"
+
+private fun windowsInstallCommand(
+    serverUrl: String,
+    token: String,
+    deviceName: String,
+    platform: String,
+): String {
+    val variable = "${'$'}p"
+    return "$variable=Join-Path ${'$'}env:TEMP 'install-device-as-mcp.ps1'; " +
+        "Invoke-WebRequest -UseBasicParsing ${powerShellQuote(WINDOWS_INSTALLER_URL)} -OutFile $variable; " +
+        "try { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $variable " +
+        "-ServerUrl ${powerShellQuote(serverUrl)} -Token ${powerShellQuote(token)} " +
+        "-Name ${powerShellQuote(deviceName)} -Platform ${powerShellQuote(platform)} } " +
+        "finally { Remove-Item $variable -Force -ErrorAction SilentlyContinue }"
+}
+
 private fun shellQuote(value: String): String = "'" + value.replace("'", "'\"'\"'") + "'"
+
+private fun powerShellQuote(value: String): String = "'" + value.replace("'", "''") + "'"
 
 private class UnauthorizedException : IllegalStateException("Session expired")
 
+private const val RELEASE_DOWNLOAD_BASE =
+    "https://github.com/Stream29/DeviceAsMcp/releases/latest/download"
+private const val POSIX_INSTALLER_URL = "$RELEASE_DOWNLOAD_BASE/install-device-as-mcp.sh"
+private const val WINDOWS_INSTALLER_URL = "$RELEASE_DOWNLOAD_BASE/install-device-as-mcp.ps1"
 private const val TOKEN_KEY = "device-as-mcp.session"
 private const val SERVER_KEY = "device-as-mcp.server"
 private const val AUTHORIZE_KEY = "device-as-mcp.authorize"

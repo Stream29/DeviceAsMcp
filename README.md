@@ -141,6 +141,11 @@ Build a release binary on a supported host:
 Generated binaries are under `daemon/build/bin/<target>/releaseExecutable/`.
 macOS cinterop must be built on macOS.
 
+The management panel generates tokenized one-click commands for every supported
+target. The installers download the latest GitHub Release binary, verify its
+SHA-256 checksum, enroll the device, and configure user-login startup through
+systemd, launchd, or the Windows Startup folder.
+
 Enroll with a one-time token generated in the management panel:
 
 ```shell
@@ -155,6 +160,9 @@ Or omit `--token` to start browser-assisted enrollment:
 ```shell
 device-as-mcp enroll --server https://mcp.example.com --name my-device
 ```
+
+Add `--no-run` to save the enrollment and exit without starting the persistent
+connection. The platform installers use this before starting the login service.
 
 Start an enrolled daemon:
 
@@ -269,3 +277,7 @@ Run Linux Native shared tests and build the Wasm production bundle:
 
 Run Native binaries and tests on their matching operating systems before
 publishing platform artifacts.
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`. The workflow validates
+the project on Linux, builds all four native targets on matching GitHub-hosted
+runners, and publishes the binaries, installers, and `SHA256SUMS`.
