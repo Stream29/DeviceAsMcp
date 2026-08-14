@@ -1,13 +1,13 @@
 # Task Tree
 
-- Deploy the production service to Aliyun ECS
+- [done] Deploy the production service to Aliyun ECS
   - [done] Inspect host capacity and services
   - [done] Repair outbound DNS resolution
-  - Install Docker Engine and Compose
-  - Create the GitHub OAuth application
-  - Configure production secrets
-  - Deploy the production Compose stack
-  - Verify HTTPS, health, login, and installers
+  - [done] Install Docker Engine and Compose
+  - [done] Create the GitHub OAuth application
+  - [done] Configure production secrets
+  - [done] Deploy the production Compose stack
+  - [done] Verify HTTPS, health, login, and installers
 
 # Details
 

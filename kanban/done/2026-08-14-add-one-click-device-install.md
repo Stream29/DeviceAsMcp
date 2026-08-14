@@ -1,6 +1,6 @@
 # Task Tree
 
-- Add tokenized one-click device installation
+- [done] Add tokenized one-click device installation
   - [done] Add daemon enrollment-only execution
   - [done] Add POSIX and Windows installers
     - [done] Detect the supported target platform
@@ -13,8 +13,8 @@
     - [done] Generate one single-use enrollment token
     - [done] Render and copy each platform command
   - [done] Record the durable installation design
-  - Validate builds, scripts, and commands
-  - Publish and verify the first release
+  - [done] Validate builds, scripts, and commands
+  - [done] Publish and verify the first release
 
 # Details
 
