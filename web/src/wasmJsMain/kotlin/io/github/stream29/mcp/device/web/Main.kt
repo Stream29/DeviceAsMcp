@@ -28,6 +28,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -72,6 +73,7 @@ import kotlinx.browser.document
 import kotlinx.browser.window
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
+import org.w3c.dom.events.Event
 import kotlin.js.toJsString
 
 private val client = HttpClient(Js) {
@@ -109,7 +111,11 @@ private fun importOAuthSession() {
         ?.let(::decodeURIComponent)
     if (!session.isNullOrBlank()) {
         window.localStorage.setItem(TOKEN_KEY, session)
-        window.history.replaceState(null, document.title, window.location.pathname)
+        window.history.replaceState(
+            null,
+            document.title,
+            window.location.pathname + window.location.search,
+        )
     }
 }
 
@@ -118,10 +124,31 @@ private fun decodeURIComponent(value: String): String =
 
 @Composable
 private fun DevicePanel() {
-    var accessToken by remember { mutableStateOf(window.localStorage.getItem(TOKEN_KEY)) }
-    val authorizeTarget = remember {
-        queryValue("authorize") ?: window.sessionStorage.getItem(AUTHORIZE_KEY)
+    var browserLocation by remember { mutableStateOf(currentBrowserLocation()) }
+    DisposableEffect(Unit) {
+        val listener: (Event) -> Unit = {
+            browserLocation = currentBrowserLocation()
+        }
+        window.addEventListener("popstate", listener)
+        onDispose {
+            window.removeEventListener("popstate", listener)
+        }
     }
+
+    fun navigate(route: AppRoute, replace: Boolean = false) {
+        if (browserLocation.path == route.path && browserLocation.search.isEmpty()) return
+        if (replace) {
+            window.history.replaceState(null, route.title, route.path)
+        } else {
+            window.history.pushState(null, route.title, route.path)
+        }
+        browserLocation = currentBrowserLocation()
+    }
+
+    var accessToken by remember { mutableStateOf(window.localStorage.getItem(TOKEN_KEY)) }
+    val authorizeTarget = queryValue("authorize", browserLocation.search)
+        ?: window.sessionStorage.getItem(AUTHORIZE_KEY)
+    val route = appRouteForPath(browserLocation.path)
     var userName by remember { mutableStateOf("") }
     var devices by remember { mutableStateOf(emptyList<DeviceSummary>()) }
     var authKeys by remember { mutableStateOf(emptyList<AuthKeySummary>()) }
@@ -131,13 +158,16 @@ private fun DevicePanel() {
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    suspend fun refresh(token: String) {
+    suspend fun refresh(token: String, targetRoute: AppRoute) {
         loading = true
         error = null
         runCatching {
             userName = apiGet<AuthenticatedUser>("/api/me", token).username
-            devices = apiGet("/api/devices", token)
-            authKeys = apiGet("/api/auth-keys", token)
+            when (targetRoute) {
+                AppRoute.DEVICES -> devices = apiGet("/api/devices", token)
+                AppRoute.AUTH_KEYS -> authKeys = apiGet("/api/auth-keys", token)
+                AppRoute.LOGIN -> Unit
+            }
         }.onFailure {
             if (it is UnauthorizedException) {
                 window.localStorage.removeItem(TOKEN_KEY)
@@ -148,17 +178,32 @@ private fun DevicePanel() {
         loading = false
     }
 
-    LaunchedEffect(accessToken) {
-        accessToken?.let {
-            if (
-                authorizeTarget != null &&
-                authorizeTarget.startsWith("${serverUrl()}/oauth/authorize?")
-            ) {
-                window.sessionStorage.removeItem(AUTHORIZE_KEY)
-                window.location.href = authorizeTarget
-            } else {
-                refresh(it)
-            }
+    LaunchedEffect(accessToken, browserLocation, authorizeTarget) {
+        val token = accessToken
+        if (
+            token != null &&
+            authorizeTarget != null &&
+            authorizeTarget.startsWith("${serverUrl()}/oauth/authorize?")
+        ) {
+            window.sessionStorage.removeItem(AUTHORIZE_KEY)
+            window.location.href = authorizeTarget
+            return@LaunchedEffect
+        }
+
+        val canonicalRoute = canonicalAppRoute(
+            path = browserLocation.path,
+            authenticated = token != null,
+        )
+        if (canonicalRoute != null && canonicalRoute != route) {
+            navigate(canonicalRoute, replace = true)
+            return@LaunchedEffect
+        }
+
+        document.title = route?.title ?: NOT_FOUND_TITLE
+        if (token != null) {
+            route
+                ?.takeIf(AppRoute::requiresAuthentication)
+                ?.let { refresh(token, it) }
         }
     }
 
@@ -166,7 +211,16 @@ private fun DevicePanel() {
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         contentAlignment = Alignment.TopCenter,
     ) {
-        if (accessToken == null) {
+        if (route == null && browserLocation.path != "/") {
+            NotFoundCard(
+                onHome = {
+                    navigate(
+                        if (accessToken == null) AppRoute.LOGIN else AppRoute.DEVICES,
+                        replace = true,
+                    )
+                },
+            )
+        } else if (accessToken == null) {
             LoginCard(
                 authorizeTarget = authorizeTarget,
                 onAuthenticated = { session ->
@@ -176,7 +230,7 @@ private fun DevicePanel() {
                 },
                 onError = { error = it },
             )
-        } else {
+        } else if (route?.requiresAuthentication == true) {
             Column(
                 Modifier.fillMaxWidth().widthIn(max = 960.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -197,129 +251,201 @@ private fun DevicePanel() {
                                     window.localStorage.removeItem(TOKEN_KEY)
                                     accessToken = null
                                     error = null
+                                    navigate(AppRoute.LOGIN, replace = true)
                                 }
                                 .onFailure { error = it.message ?: "Sign out failed" }
                             loading = false
                         }
                     }) { Text("Sign out") }
                 }
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                DashboardCard("Devices") {
-                    if (devices.isEmpty()) Text("No enrolled devices")
-                    devices.forEach { device ->
-                        DeviceItem(
-                            device = device,
-                            enabled = !loading,
-                            onRename = { name ->
-                                val token = accessToken ?: return@DeviceItem
-                                loading = true
-                                launchUi {
-                                    runCatching {
-                                        apiPutNoContent(
-                                            "/api/devices/${device.id.value}",
-                                            token,
-                                            RenameDeviceRequest(name),
-                                        )
-                                        refresh(token)
-                                    }.onFailure {
-                                        error = it.message ?: "Device rename failed"
-                                    }
-                                    loading = false
-                                }
-                            },
-                        )
-                    }
-                    Text(
-                        "The command uses this panel's server automatically. " +
-                            "The device chooses its initial name; rename it here after enrollment.",
-                        style = MaterialTheme.typography.bodySmall,
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    NavigationButton(
+                        selected = route == AppRoute.DEVICES,
+                        label = "Devices",
+                        onClick = {
+                            error = null
+                            navigate(AppRoute.DEVICES)
+                        },
                     )
-                    Text("Install platform")
-                    InstallPlatform.entries.forEach { platform ->
-                        if (platform == selectedInstallPlatform) {
-                            Button(
-                                onClick = {},
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(platform.displayName)
-                            }
-                        } else {
-                            OutlinedButton(
-                                onClick = {
-                                    selectedInstallPlatform = platform
-                                    installCommand = null
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                Text(platform.displayName)
-                            }
-                        }
-                    }
-                    Button(onClick = {
-                        val token = accessToken ?: return@Button
-                        val platform = selectedInstallPlatform
-                        launchUi {
-                            runCatching {
-                                val enrollment = apiPost<DeviceEnrollmentToken>(
-                                    "/api/enrollment-token",
-                                    token,
-                                    Unit,
-                                )
-                                installCommand = platform.installCommand(
-                                    serverUrl(),
-                                    enrollment.token,
-                                )
-                            }.onSuccess {
-                                error = null
-                            }.onFailure { error = it.message }
-                        }
-                    }) {
-                        Text("Generate ${selectedInstallPlatform.displayName} command")
-                    }
-                    installCommand?.let {
-                        Text(
-                            "This command contains a single-use token that expires in 10 minutes. " +
-                                "It downloads and verifies the native daemon from GitHub.",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        Text(it, style = MaterialTheme.typography.bodySmall)
-                        OutlinedButton(onClick = { copyText(it) }) { Text("Copy") }
-                    }
+                    NavigationButton(
+                        selected = route == AppRoute.AUTH_KEYS,
+                        label = "MCP auth keys",
+                        onClick = {
+                            error = null
+                            navigate(AppRoute.AUTH_KEYS)
+                        },
+                    )
                 }
-                DashboardCard("MCP auth keys") {
-                    authKeys.forEach { key ->
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text(key.name)
-                            OutlinedButton(onClick = {
-                                val token = accessToken ?: return@OutlinedButton
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                when (route) {
+                    AppRoute.DEVICES -> {
+                        DashboardCard("Devices") {
+                            if (devices.isEmpty()) Text("No enrolled devices")
+                            devices.forEach { device ->
+                                DeviceItem(
+                                    device = device,
+                                    enabled = !loading,
+                                    onRename = { name ->
+                                        val token = accessToken ?: return@DeviceItem
+                                        loading = true
+                                        launchUi {
+                                            runCatching {
+                                                apiPutNoContent(
+                                                    "/api/devices/${device.id.value}",
+                                                    token,
+                                                    RenameDeviceRequest(name),
+                                                )
+                                                refresh(token, AppRoute.DEVICES)
+                                            }.onFailure {
+                                                error = it.message ?: "Device rename failed"
+                                            }
+                                            loading = false
+                                        }
+                                    },
+                                )
+                            }
+                            Text(
+                                "The command uses this panel's server automatically. " +
+                                    "The device chooses its initial name; rename it here after enrollment.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Text("Install platform")
+                            InstallPlatform.entries.forEach { platform ->
+                                if (platform == selectedInstallPlatform) {
+                                    Button(
+                                        onClick = {},
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text(platform.displayName)
+                                    }
+                                } else {
+                                    OutlinedButton(
+                                        onClick = {
+                                            selectedInstallPlatform = platform
+                                            installCommand = null
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text(platform.displayName)
+                                    }
+                                }
+                            }
+                            Button(onClick = {
+                                val token = accessToken ?: return@Button
+                                val platform = selectedInstallPlatform
                                 launchUi {
                                     runCatching {
-                                        apiDelete("/api/auth-keys/${key.id}", token)
-                                        refresh(token)
-                                    }.onFailure { error = it.message ?: "Key revocation failed" }
+                                        val enrollment = apiPost<DeviceEnrollmentToken>(
+                                            "/api/enrollment-token",
+                                            token,
+                                            Unit,
+                                        )
+                                        installCommand = platform.installCommand(
+                                            serverUrl(),
+                                            enrollment.token,
+                                        )
+                                    }.onSuccess {
+                                        error = null
+                                    }.onFailure { error = it.message }
                                 }
-                            }) { Text("Revoke") }
-                        }
-                    }
-                    Button(onClick = {
-                        val token = accessToken ?: return@Button
-                        launchUi {
-                            runCatching {
-                                val key = apiPost<CreatedAuthKey>(
-                                    "/api/auth-keys",
-                                    token,
-                                    CreateAuthKeyRequest("Remote MCP"),
+                            }) {
+                                Text("Generate ${selectedInstallPlatform.displayName} command")
+                            }
+                            installCommand?.let {
+                                Text(
+                                    "This command contains a single-use token that expires in 10 minutes. " +
+                                        "It downloads and verifies the native daemon from GitHub.",
+                                    style = MaterialTheme.typography.bodySmall,
                                 )
-                                createdKey = key.token
-                                refresh(token)
-                            }.onFailure { error = it.message }
+                                Text(it, style = MaterialTheme.typography.bodySmall)
+                                OutlinedButton(onClick = { copyText(it) }) { Text("Copy") }
+                            }
                         }
-                    }) { Text("Create auth key") }
-                    createdKey?.let {
-                        Text("Shown once: $it", style = MaterialTheme.typography.bodySmall)
-                        OutlinedButton(onClick = { copyText(it) }) { Text("Copy") }
                     }
+
+                    AppRoute.AUTH_KEYS -> {
+                        DashboardCard("MCP auth keys") {
+                            if (authKeys.isEmpty()) Text("No MCP auth keys")
+                            authKeys.forEach { key ->
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                ) {
+                                    Text(key.name)
+                                    OutlinedButton(onClick = {
+                                        val token = accessToken ?: return@OutlinedButton
+                                        launchUi {
+                                            runCatching {
+                                                apiDelete("/api/auth-keys/${key.id}", token)
+                                                refresh(token, AppRoute.AUTH_KEYS)
+                                            }.onFailure {
+                                                error = it.message ?: "Key revocation failed"
+                                            }
+                                        }
+                                    }) { Text("Revoke") }
+                                }
+                            }
+                            Button(onClick = {
+                                val token = accessToken ?: return@Button
+                                launchUi {
+                                    runCatching {
+                                        val key = apiPost<CreatedAuthKey>(
+                                            "/api/auth-keys",
+                                            token,
+                                            CreateAuthKeyRequest("Remote MCP"),
+                                        )
+                                        createdKey = key.token
+                                        refresh(token, AppRoute.AUTH_KEYS)
+                                    }.onFailure { error = it.message }
+                                }
+                            }) { Text("Create auth key") }
+                            createdKey?.let {
+                                Text("Shown once: $it", style = MaterialTheme.typography.bodySmall)
+                                OutlinedButton(onClick = { copyText(it) }) { Text("Copy") }
+                            }
+                        }
+                    }
+
+                    AppRoute.LOGIN -> Unit
                 }
+            }
+        } else {
+            CircularProgressIndicator()
+        }
+    }
+}
+
+@Composable
+private fun NavigationButton(
+    selected: Boolean,
+    label: String,
+    onClick: () -> Unit,
+) {
+    if (selected) {
+        Button(onClick = {}, enabled = false) {
+            Text(label)
+        }
+    } else {
+        OutlinedButton(onClick = onClick) {
+            Text(label)
+        }
+    }
+}
+
+@Composable
+private fun NotFoundCard(onHome: () -> Unit) {
+    Card(
+        Modifier.fillMaxWidth().widthIn(max = 520.dp),
+        shape = RoundedCornerShape(20.dp),
+    ) {
+        Column(Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Page not found", style = MaterialTheme.typography.headlineMedium)
+            Text("This management route does not exist.")
+            Button(onClick = onHome) {
+                Text("Go to management panel")
             }
         }
     }
@@ -367,7 +493,7 @@ private fun LoginCard(
     var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     Card(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().widthIn(max = 520.dp),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xff172033)),
     ) {
@@ -522,7 +648,7 @@ private fun defaultServerUrl(): String {
     }
 }
 
-private fun queryValue(name: String): String? = window.location.search
+private fun queryValue(name: String, search: String): String? = search
     .removePrefix("?")
     .split('&')
     .mapNotNull { part ->
@@ -532,6 +658,11 @@ private fun queryValue(name: String): String? = window.location.search
     .firstOrNull { it.first == name }
     ?.second
     ?.let(::decodeURIComponent)
+
+private fun currentBrowserLocation(): BrowserLocation = BrowserLocation(
+    path = window.location.pathname,
+    search = window.location.search,
+)
 
 private fun launchUi(block: suspend () -> Unit) {
     uiScope.launch { block() }
@@ -590,6 +721,11 @@ private fun powerShellQuote(value: String): String = "'" + value.replace("'", "'
 
 private class UnauthorizedException : IllegalStateException("Session expired")
 
+private data class BrowserLocation(
+    val path: String,
+    val search: String,
+)
+
 private const val RELEASE_DOWNLOAD_BASE =
     "https://github.com/Stream29/DeviceAsMcp/releases/latest/download"
 private const val POSIX_INSTALLER_URL = "$RELEASE_DOWNLOAD_BASE/install-device-as-mcp.sh"
@@ -598,3 +734,4 @@ private const val TOKEN_KEY = "device-as-mcp.session"
 private const val AUTHORIZE_KEY = "device-as-mcp.authorize"
 private const val MAX_ERROR_DETAIL_LENGTH = 512
 private const val MAX_DEVICE_NAME_LENGTH = 100
+private const val NOT_FOUND_TITLE = "Page not found · DeviceAsMcp"

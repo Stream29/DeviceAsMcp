@@ -217,6 +217,25 @@ class ApplicationTest {
     }
 
     @Test
+    fun oauthAuthorizationRedirectsToSemanticLoginRoute() = testApplication {
+        application { deviceAsMcpModule(testRuntime()) }
+        val noRedirectClient = createClient {
+            followRedirects = false
+        }
+
+        val response = noRedirectClient.get(
+            "/oauth/authorize?response_type=code&client_id=test-client",
+        )
+
+        assertEquals(HttpStatusCode.Found, response.status)
+        assertTrue(
+            response.headers[HttpHeaders.Location]
+                .orEmpty()
+                .startsWith("http://localhost:8081/login?authorize="),
+        )
+    }
+
+    @Test
     fun relayDestinationWaitsForIndependentManifest() = testApplication {
         val runtime = testRuntime()
         application { deviceAsMcpModule(runtime) }

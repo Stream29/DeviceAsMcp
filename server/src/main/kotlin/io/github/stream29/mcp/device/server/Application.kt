@@ -290,7 +290,8 @@ private fun io.ktor.server.routing.Route.oauthRoutes(runtime: ServerRuntime) {
             val session = runtime.oauth.finishGithub(code, state, browserState)
             call.setSessionCookie(runtime, session)
             call.respondRedirect(
-                "${runtime.config.frontendBaseUrl.trimEnd('/')}#session=${encodeFragmentComponent(session)}",
+                "${runtime.config.frontendBaseUrl.trimEnd('/')}/login" +
+                    "#session=${encodeFragmentComponent(session)}",
             )
         }
         get("/daemon/complete") {
@@ -355,9 +356,8 @@ private fun io.ktor.server.routing.Route.oauthRoutes(runtime: ServerRuntime) {
         val user = call.managementToken()?.let { runtime.accounts.userByToken(it) }
         if (user == null) {
             val target = "${runtime.config.publicBaseUrl.trimEnd('/')}/oauth/authorize?${call.request.queryString()}"
-            val separator = if ('?' in runtime.config.frontendBaseUrl) '&' else '?'
             return@get call.respondRedirect(
-                "${runtime.config.frontendBaseUrl}$separator" +
+                "${runtime.config.frontendBaseUrl.trimEnd('/')}/login?" +
                     "authorize=${encodeFragmentComponent(target)}",
             )
         }

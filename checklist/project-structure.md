@@ -133,6 +133,13 @@
 - Let the gateway authenticate each `/mcp` request and optionally use the derived user ID for best-effort affinity.
 - Build the management frontend with Compose Multiplatform for Wasm.
 - Let authenticated users manage their devices through the frontend.
+- Expose semantic management routes through browser history.
+  - Use `/login` for authentication.
+  - Use `/devices` for device enrollment and management.
+  - Use `/auth-keys` for remote MCP credentials.
+  - Redirect `/` according to the current authentication state.
+  - Support direct route loading through the static server's index fallback.
+- Keep viewport-wide CSS outside the body mounted by `ComposeViewport`.
 
 ## Device Operation Delivery
 
