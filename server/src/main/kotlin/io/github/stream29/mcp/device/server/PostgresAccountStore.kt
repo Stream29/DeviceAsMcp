@@ -242,6 +242,23 @@ internal class PostgresAccountStore(
         }
     }
 
+    override suspend fun renameDevice(userId: UserId, deviceId: DeviceId, name: String): Boolean = io {
+        val normalized = name.trim()
+        require(normalized.length in 1..100) {
+            "Device name must contain 1 to 100 characters"
+        }
+        dataSource.connection.use { connection ->
+            connection.prepareStatement(
+                "update device set name = ? where id = ? and user_id = ?",
+            ).use {
+                it.setString(1, normalized)
+                it.setObject(2, UUID.fromString(deviceId.value))
+                it.setObject(3, UUID.fromString(userId.value))
+                it.executeUpdate() == 1
+            }
+        }
+    }
+
     override suspend fun deviceUser(deviceId: DeviceId): UserId? = io {
         dataSource.connection.use { connection ->
             connection.prepareStatement("select user_id from device where id = ?").use {

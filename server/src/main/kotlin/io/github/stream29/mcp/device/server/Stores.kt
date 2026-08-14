@@ -335,6 +335,7 @@ internal interface AccountStore {
     suspend fun consumeEnrollmentToken(token: String): UserId?
     suspend fun enrollDevice(userId: UserId, name: String, platform: String): DeviceCredential
     suspend fun devices(userId: UserId): List<DeviceSummary>
+    suspend fun renameDevice(userId: UserId, deviceId: DeviceId, name: String): Boolean
     suspend fun deviceUser(deviceId: DeviceId): UserId?
     suspend fun authenticateDevice(deviceId: DeviceId, secret: String): Boolean
     suspend fun findOrCreateGithubUser(githubId: String, githubLogin: String): AuthenticatedUser
@@ -487,6 +488,18 @@ internal class InMemoryAccountStore(
     override suspend fun devices(userId: UserId): List<DeviceSummary> = mutex.withLock {
         devices.values.filter { it.userId == userId }.map { it.summary }
     }
+
+    override suspend fun renameDevice(userId: UserId, deviceId: DeviceId, name: String): Boolean =
+        mutex.withLock {
+            val normalized = name.trim()
+            require(normalized.length in 1..100) {
+                "Device name must contain 1 to 100 characters"
+            }
+            val device = devices[deviceId]?.takeIf { it.userId == userId }
+                ?: return@withLock false
+            devices[deviceId] = device.copy(summary = device.summary.copy(name = normalized))
+            true
+        }
 
     override suspend fun deviceUser(deviceId: DeviceId): UserId? = mutex.withLock { devices[deviceId]?.userId }
 

@@ -3,9 +3,11 @@ package io.github.stream29.mcp.device.server
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class AccountStoreTest {
     @Test
@@ -36,5 +38,18 @@ class AccountStoreTest {
         assertEquals("new-octocat", renamed.githubLogin)
         assertNotEquals(original.id, recycledLogin.id)
         assertEquals("octocat", recycledLogin.githubLogin)
+    }
+
+    @Test
+    fun deviceRenameRequiresOwnership() = runTest {
+        val accounts = InMemoryAccountStore()
+        val owner = assertNotNull(accounts.register("owner", "correct horse battery staple"))
+        val other = assertNotNull(accounts.register("other", "correct horse battery staple"))
+        val device = accounts.enrollDevice(owner.id, "original", "linux-x64")
+
+        assertTrue(accounts.renameDevice(owner.id, device.deviceId, "  workstation  "))
+        assertEquals("workstation", accounts.devices(owner.id).single().name)
+        assertFalse(accounts.renameDevice(other.id, device.deviceId, "not allowed"))
+        assertEquals("workstation", accounts.devices(owner.id).single().name)
     }
 }

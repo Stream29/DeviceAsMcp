@@ -23,7 +23,7 @@ fun main(args: Array<String>) = runBlocking {
             "enroll" -> {
                 val server = option(args, "--server") ?: "http://localhost:8080"
                 val token = option(args, "--token") ?: browserEnrollmentToken(client, server)
-                val name = option(args, "--name") ?: platformName()
+                val name = option(args, "--name") ?: defaultDeviceName()
                 enroll(client, server, token, name).also { enrolled ->
                     store.save(enrolled)
                     if ("--no-run" in args) {

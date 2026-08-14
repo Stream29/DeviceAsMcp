@@ -71,6 +71,8 @@ class MiddlewareIntegrationTest {
             val device = store.enrollDevice(user.id, "integration device", "linux-x64")
             assertTrue(store.authenticateDevice(device.deviceId, device.secret))
             assertEquals(user.id, store.deviceUser(device.deviceId))
+            assertTrue(store.renameDevice(user.id, device.deviceId, "renamed integration device"))
+            assertEquals("renamed integration device", store.devices(user.id).single().name)
 
             val github = store.findOrCreateGithubUser("github-id-$suffix", githubLogin)
             val renamed = store.findOrCreateGithubUser("github-id-$suffix", "$githubLogin-renamed")

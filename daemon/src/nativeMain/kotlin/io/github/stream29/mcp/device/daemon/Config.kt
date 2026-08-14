@@ -59,12 +59,13 @@ internal suspend fun enroll(
 ): DaemonConfig {
     val normalizedServerUrl = normalizeServerUrl(serverUrl)
     val platform = platformName()
+    val normalizedName = name.trim().take(MAX_DEVICE_NAME_LENGTH).ifBlank { platform }
     val response = client.post("$normalizedServerUrl/daemon/enroll") {
         contentType(ContentType.Application.Json)
-        setBody(DaemonEnrollmentRequest(token, name, platform))
+        setBody(DaemonEnrollmentRequest(token, normalizedName, platform))
     }
     check(response.status.isSuccess()) { "Enrollment failed: HTTP ${response.status.value}" }
-    return DaemonConfig(normalizedServerUrl, response.body(), name, platform)
+    return DaemonConfig(normalizedServerUrl, response.body(), normalizedName, platform)
 }
 
 @Serializable
@@ -115,3 +116,5 @@ private fun normalizeServerUrl(value: String): String {
     }
     return value.trim().trimEnd('/')
 }
+
+private const val MAX_DEVICE_NAME_LENGTH = 100

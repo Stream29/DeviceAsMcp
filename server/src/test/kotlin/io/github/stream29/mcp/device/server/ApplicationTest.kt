@@ -3,7 +3,9 @@ package io.github.stream29.mcp.device.server
 import io.github.stream29.mcp.device.protocol.AuthSession
 import io.github.stream29.mcp.device.protocol.CreateAuthKeyRequest
 import io.github.stream29.mcp.device.protocol.DaemonEnrollmentRequest
+import io.github.stream29.mcp.device.protocol.DeviceCredential
 import io.github.stream29.mcp.device.protocol.DeviceEnrollmentToken
+import io.github.stream29.mcp.device.protocol.DeviceSummary
 import io.github.stream29.mcp.device.protocol.FileManifest
 import io.github.stream29.mcp.device.protocol.FileManifestEntry
 import io.github.stream29.mcp.device.protocol.FileTransferManifestRequest
@@ -14,6 +16,7 @@ import io.github.stream29.mcp.device.protocol.ManifestEntryType
 import io.github.stream29.mcp.device.protocol.PasswordLoginRequest
 import io.github.stream29.mcp.device.protocol.ProtocolJson
 import io.github.stream29.mcp.device.protocol.RegisterRequest
+import io.github.stream29.mcp.device.protocol.RenameDeviceRequest
 import io.github.stream29.mcp.device.protocol.TransferId
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -94,6 +97,17 @@ class ApplicationTest {
             setBody(DaemonEnrollmentRequest(enrollmentToken.token, "Laptop", "linux-x64"))
         }
         assertEquals(HttpStatusCode.Created, device.status)
+        val credential = device.body<DeviceCredential>()
+        val rename = jsonClient.put("/api/devices/${credential.deviceId.value}") {
+            bearer(session.accessToken)
+            header(HttpHeaders.ContentType, ContentType.Application.Json)
+            setBody(RenameDeviceRequest("Workstation"))
+        }
+        assertEquals(HttpStatusCode.NoContent, rename.status)
+        val devices = jsonClient.get("/api/devices") {
+            bearer(session.accessToken)
+        }.body<List<DeviceSummary>>()
+        assertEquals(listOf("Workstation"), devices.map(DeviceSummary::name))
 
         val key = jsonClient.post("/api/auth-keys") {
             bearer(session.accessToken)
@@ -101,8 +115,6 @@ class ApplicationTest {
             setBody(CreateAuthKeyRequest("CI"))
         }
         assertEquals(HttpStatusCode.Created, key.status)
-
-        assertEquals(HttpStatusCode.OK, jsonClient.get("/api/devices") { bearer(session.accessToken) }.status)
 
         assertEquals(
             HttpStatusCode.NoContent,
@@ -122,17 +134,24 @@ class ApplicationTest {
     }
 
     @Test
-    fun corsAllowsCredentialedManagementDeletesFromFrontend() = testApplication {
+    fun corsAllowsCredentialedManagementWritesFromFrontend() = testApplication {
         application { deviceAsMcpModule(testRuntime()) }
 
-        val response = client.options("/api/auth-keys/key") {
+        val deleteResponse = client.options("/api/auth-keys/key") {
             header(HttpHeaders.Origin, "http://localhost:8081")
             header(HttpHeaders.AccessControlRequestMethod, "DELETE")
         }
+        val putResponse = client.options("/api/devices/device") {
+            header(HttpHeaders.Origin, "http://localhost:8081")
+            header(HttpHeaders.AccessControlRequestMethod, "PUT")
+        }
 
-        assertEquals(HttpStatusCode.OK, response.status)
-        assertTrue(response.headers[HttpHeaders.AccessControlAllowMethods].orEmpty().contains("DELETE"))
-        assertEquals("true", response.headers[HttpHeaders.AccessControlAllowCredentials])
+        assertEquals(HttpStatusCode.OK, deleteResponse.status)
+        assertTrue(deleteResponse.headers[HttpHeaders.AccessControlAllowMethods].orEmpty().contains("DELETE"))
+        assertEquals("true", deleteResponse.headers[HttpHeaders.AccessControlAllowCredentials])
+        assertEquals(HttpStatusCode.OK, putResponse.status)
+        assertTrue(putResponse.headers[HttpHeaders.AccessControlAllowMethods].orEmpty().contains("PUT"))
+        assertEquals("true", putResponse.headers[HttpHeaders.AccessControlAllowCredentials])
     }
 
     @Test

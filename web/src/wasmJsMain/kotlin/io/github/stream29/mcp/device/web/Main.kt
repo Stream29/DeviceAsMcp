@@ -51,6 +51,7 @@ import io.github.stream29.mcp.device.protocol.DeviceSummary
 import io.github.stream29.mcp.device.protocol.PasswordLoginRequest
 import io.github.stream29.mcp.device.protocol.ProtocolJson
 import io.github.stream29.mcp.device.protocol.RegisterRequest
+import io.github.stream29.mcp.device.protocol.RenameDeviceRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.js.Js
@@ -59,6 +60,7 @@ import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
+import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
@@ -126,10 +128,8 @@ private fun DevicePanel() {
     var createdKey by remember { mutableStateOf<String?>(null) }
     var installCommand by remember { mutableStateOf<String?>(null) }
     var selectedInstallPlatform by remember { mutableStateOf(InstallPlatform.LINUX_X64) }
-    var deviceName by remember { mutableStateOf("my-device") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var serverAddress by remember { mutableStateOf(serverUrl()) }
 
     suspend fun refresh(token: String) {
         loading = true
@@ -205,31 +205,34 @@ private fun DevicePanel() {
                 }
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
                 DashboardCard("Devices") {
-                    OutlinedTextField(
-                        value = serverAddress,
-                        onValueChange = {
-                            serverAddress = it
-                            installCommand = null
-                            window.localStorage.setItem(SERVER_KEY, it.trimEnd('/'))
-                        },
-                        label = { Text("Server URL") },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                     if (devices.isEmpty()) Text("No enrolled devices")
                     devices.forEach { device ->
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("${device.name} · ${device.platform}")
-                            Text(if (device.online) "online" else "offline")
-                        }
+                        DeviceItem(
+                            device = device,
+                            enabled = !loading,
+                            onRename = { name ->
+                                val token = accessToken ?: return@DeviceItem
+                                loading = true
+                                launchUi {
+                                    runCatching {
+                                        apiPutNoContent(
+                                            "/api/devices/${device.id.value}",
+                                            token,
+                                            RenameDeviceRequest(name),
+                                        )
+                                        refresh(token)
+                                    }.onFailure {
+                                        error = it.message ?: "Device rename failed"
+                                    }
+                                    loading = false
+                                }
+                            },
+                        )
                     }
-                    OutlinedTextField(
-                        value = deviceName,
-                        onValueChange = {
-                            deviceName = it
-                            installCommand = null
-                        },
-                        label = { Text("New device name") },
-                        modifier = Modifier.fillMaxWidth(),
+                    Text(
+                        "The command uses this panel's server automatically. " +
+                            "The device chooses its initial name; rename it here after enrollment.",
+                        style = MaterialTheme.typography.bodySmall,
                     )
                     Text("Install platform")
                     InstallPlatform.entries.forEach { platform ->
@@ -254,13 +257,7 @@ private fun DevicePanel() {
                     }
                     Button(onClick = {
                         val token = accessToken ?: return@Button
-                        val normalizedServer = serverAddress.trimEnd('/')
-                        val normalizedName = deviceName.trim()
                         val platform = selectedInstallPlatform
-                        if (normalizedServer.isBlank() || normalizedName.isBlank()) {
-                            error = "Server URL and device name are required"
-                            return@Button
-                        }
                         launchUi {
                             runCatching {
                                 val enrollment = apiPost<DeviceEnrollmentToken>(
@@ -269,9 +266,8 @@ private fun DevicePanel() {
                                     Unit,
                                 )
                                 installCommand = platform.installCommand(
-                                    normalizedServer,
+                                    serverUrl(),
                                     enrollment.token,
-                                    normalizedName,
                                 )
                             }.onSuccess {
                                 error = null
@@ -325,6 +321,38 @@ private fun DevicePanel() {
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun DeviceItem(
+    device: DeviceSummary,
+    enabled: Boolean,
+    onRename: (String) -> Unit,
+) {
+    var name by remember(device.id, device.name) { mutableStateOf(device.name) }
+    val normalized = name.trim()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(device.platform)
+            Text(if (device.online) "online" else "offline")
+        }
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("Device name") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(
+            enabled = enabled &&
+                normalized.isNotEmpty() &&
+                normalized.length <= MAX_DEVICE_NAME_LENGTH &&
+                normalized != device.name,
+            onClick = { onRename(normalized) },
+        ) {
+            Text("Rename")
         }
     }
 }
@@ -438,6 +466,19 @@ private suspend fun apiPostNoContent(path: String, token: String) {
     response.requireApiSuccess(authenticated = true)
 }
 
+private suspend fun apiPutNoContent(
+    path: String,
+    token: String,
+    body: RenameDeviceRequest,
+) {
+    val response = client.put("${serverUrl()}$path") {
+        bearerAuth(token)
+        contentType(ContentType.Application.Json)
+        setBody(ProtocolJson.encodeToString(body))
+    }
+    response.requireApiSuccess(authenticated = true)
+}
+
 private suspend fun apiDelete(path: String, token: String) {
     val response = client.delete("${serverUrl()}$path") { bearerAuth(token) }
     response.requireApiSuccess(authenticated = true)
@@ -460,8 +501,8 @@ private suspend fun HttpResponse.requireApiSuccess(authenticated: Boolean = fals
     )
 }
 
-private fun serverUrl(): String = window.localStorage.getItem(SERVER_KEY)
-    ?: document.querySelector("meta[name='device-as-mcp-server']")
+private fun serverUrl(): String =
+    document.querySelector("meta[name='device-as-mcp-server']")
         ?.getAttribute("content")
         ?.trim()
         ?.trimEnd('/')
@@ -511,11 +552,11 @@ private enum class InstallPlatform(
     WINDOWS_X64("Windows x64 (PowerShell)", "windows-x64", windows = true),
     ;
 
-    fun installCommand(serverUrl: String, token: String, deviceName: String): String {
+    fun installCommand(serverUrl: String, token: String): String {
         return if (windows) {
-            windowsInstallCommand(serverUrl, token, deviceName, releasePlatform)
+            windowsInstallCommand(serverUrl, token, releasePlatform)
         } else {
-            unixInstallCommand(serverUrl, token, deviceName, releasePlatform)
+            unixInstallCommand(serverUrl, token, releasePlatform)
         }
     }
 }
@@ -523,17 +564,15 @@ private enum class InstallPlatform(
 private fun unixInstallCommand(
     serverUrl: String,
     token: String,
-    deviceName: String,
     platform: String,
 ): String =
     "curl --proto '=https' --tlsv1.2 -fsSL ${shellQuote(POSIX_INSTALLER_URL)} | " +
         "sh -s -- --server ${shellQuote(serverUrl)} --token ${shellQuote(token)} " +
-        "--name ${shellQuote(deviceName)} --platform ${shellQuote(platform)}"
+        "--platform ${shellQuote(platform)}"
 
 private fun windowsInstallCommand(
     serverUrl: String,
     token: String,
-    deviceName: String,
     platform: String,
 ): String {
     val variable = "${'$'}p"
@@ -541,7 +580,7 @@ private fun windowsInstallCommand(
         "Invoke-WebRequest -UseBasicParsing ${powerShellQuote(WINDOWS_INSTALLER_URL)} -OutFile $variable; " +
         "try { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $variable " +
         "-ServerUrl ${powerShellQuote(serverUrl)} -Token ${powerShellQuote(token)} " +
-        "-Name ${powerShellQuote(deviceName)} -Platform ${powerShellQuote(platform)} } " +
+        "-Platform ${powerShellQuote(platform)} } " +
         "finally { Remove-Item $variable -Force -ErrorAction SilentlyContinue }"
 }
 
@@ -556,6 +595,6 @@ private const val RELEASE_DOWNLOAD_BASE =
 private const val POSIX_INSTALLER_URL = "$RELEASE_DOWNLOAD_BASE/install-device-as-mcp.sh"
 private const val WINDOWS_INSTALLER_URL = "$RELEASE_DOWNLOAD_BASE/install-device-as-mcp.ps1"
 private const val TOKEN_KEY = "device-as-mcp.session"
-private const val SERVER_KEY = "device-as-mcp.server"
 private const val AUTHORIZE_KEY = "device-as-mcp.authorize"
 private const val MAX_ERROR_DETAIL_LENGTH = 512
+private const val MAX_DEVICE_NAME_LENGTH = 100

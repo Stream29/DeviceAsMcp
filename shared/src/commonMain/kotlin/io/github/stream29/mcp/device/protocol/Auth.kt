@@ -15,9 +15,6 @@ data class AuthenticatedUser(val id: UserId, val username: String, val githubLog
 data class AuthSession(val accessToken: String, val user: AuthenticatedUser)
 
 @Serializable
-data class DeviceEnrollmentRequest(val name: String, val platform: String)
-
-@Serializable
 data class DeviceEnrollmentToken(val token: String, val expiresAtEpochMillis: Long)
 
 @Serializable
@@ -37,6 +34,9 @@ data class DeviceSummary(
     val platform: String,
     val online: Boolean,
 )
+
+@Serializable
+data class RenameDeviceRequest(val name: String)
 
 @Serializable
 data class AuthKeySummary(val id: String, val name: String, val createdAtEpochMillis: Long)

@@ -144,23 +144,25 @@ macOS cinterop must be built on macOS.
 The management panel generates tokenized one-click commands for every supported
 target. The installers download the latest GitHub Release binary, verify its
 SHA-256 checksum, enroll the device, and configure user-login startup through
-systemd, launchd, or the Windows Startup folder.
+systemd, launchd, or the Windows Startup folder. The panel supplies its own
+server URL automatically, and the target device uses its hostname as the initial
+display name. Enrolled devices can be renamed from the panel.
 
 Enroll with a one-time token generated in the management panel:
 
 ```shell
 device-as-mcp enroll \
   --server https://mcp.example.com \
-  --token TOKEN \
-  --name my-device
+  --token TOKEN
 ```
 
 Or omit `--token` to start browser-assisted enrollment:
 
 ```shell
-device-as-mcp enroll --server https://mcp.example.com --name my-device
+device-as-mcp enroll --server https://mcp.example.com
 ```
 
+Use `--name` only to override the device-derived default name.
 Add `--no-run` to save the enrollment and exit without starting the persistent
 connection. The platform installers use this before starting the login service.
 

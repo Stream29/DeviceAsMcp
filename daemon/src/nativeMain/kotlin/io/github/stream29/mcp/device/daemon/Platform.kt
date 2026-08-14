@@ -34,6 +34,12 @@ internal fun platformName(): String = when {
     else -> Platform.osFamily.name.lowercase()
 }
 
+internal fun defaultDeviceName(): String =
+    sequenceOf(environment("COMPUTERNAME"), environment("HOSTNAME"))
+        .mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
+        .firstOrNull()
+        ?: platformName()
+
 @OptIn(ExperimentalNativeApi::class)
 internal fun shellCommand(script: String): List<String> {
     return if (Platform.osFamily == OsFamily.WINDOWS) {

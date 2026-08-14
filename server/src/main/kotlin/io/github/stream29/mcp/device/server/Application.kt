@@ -17,6 +17,7 @@ import io.github.stream29.mcp.device.protocol.OperationResultEnvelope
 import io.github.stream29.mcp.device.protocol.PasswordLoginRequest
 import io.github.stream29.mcp.device.protocol.ProtocolJson
 import io.github.stream29.mcp.device.protocol.RegisterRequest
+import io.github.stream29.mcp.device.protocol.RenameDeviceRequest
 import io.github.stream29.mcp.device.protocol.TransferId
 import io.ktor.http.ContentType
 import io.ktor.http.Cookie
@@ -167,6 +168,7 @@ internal fun Application.deviceAsMcpModule(
         allowHeader(HttpHeaders.Authorization)
         allowHeader(HttpHeaders.ContentType)
         allowMethod(HttpMethod.Delete)
+        allowMethod(HttpMethod.Put)
         allowCredentials = true
     }
     install(StatusPages) {
@@ -415,6 +417,17 @@ private fun io.ktor.server.routing.Route.managementRoutes(runtime: ServerRuntime
                     device.copy(online = runtime.routing.deviceOwner(device.id) != null)
                 },
             )
+        }
+        put("/devices/{id}") {
+            val user = call.requireManagementUser(runtime.accounts) ?: return@put
+            val deviceId = call.parameters["id"]?.let(::DeviceId)
+                ?: return@put call.respond(HttpStatusCode.BadRequest)
+            val request = call.receive<RenameDeviceRequest>()
+            if (runtime.accounts.renameDevice(user.id, deviceId, request.name)) {
+                call.respond(HttpStatusCode.NoContent)
+            } else {
+                call.respond(HttpStatusCode.NotFound)
+            }
         }
         post("/enrollment-token") {
             val user = call.requireManagementUser(runtime.accounts) ?: return@post
