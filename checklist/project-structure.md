@@ -153,6 +153,30 @@
 - Let the gateway authenticate each `/mcp` request and optionally use the derived user ID for best-effort affinity.
 - Build the management frontend with Compose Multiplatform for Wasm.
 - Let authenticated users manage their devices through the frontend.
+- Keep the management device inventory current through invalidation events.
+  - Expose an authenticated `GET /api/devices/events` SSE endpoint.
+  - Authenticate the request before starting the SSE response.
+  - Send only an event named `device_list.update` with `{}` data.
+  - Treat the event as an invalidation and refetch `GET /api/devices`.
+  - Debounce consecutive invalidations in the frontend.
+  - Reconnect the event stream after interruption.
+  - Reconcile the device list every 30 seconds to recover missed events and
+    expired owner leases.
+  - Publish invalidations after enrollment, rename, revoke, daemon connect, and
+    daemon disconnect state changes.
+  - Keep successful state changes independent of invalidation delivery.
+  - Use the RabbitMQ topic exchange
+    `device_as_mcp.device_list_updates.v1` for cross-instance propagation.
+  - Let every server instance declare one
+    `device_as_mcp.device_list_updates.<instanceId>` queue.
+  - Make each event queue non-durable, exclusive, and auto-delete.
+  - Bind every event queue with routing key `device_list.update`.
+  - Keep the AMQP body empty and carry only the internal user ID in a
+    `user-id` header.
+  - Let every instance consume each invalidation and notify only matching local
+    SSE subscribers.
+  - Keep invalidation messages transient, duplicate-safe, lossy, and free of
+    replay state.
 - Expose semantic management routes through browser history.
   - Use `/login` for authentication.
   - Use `/devices` for device enrollment and management.

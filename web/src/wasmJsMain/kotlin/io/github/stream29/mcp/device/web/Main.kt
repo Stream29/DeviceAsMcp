@@ -25,6 +25,7 @@ import io.github.stream29.mcp.device.protocol.AuthenticatedUser
 import io.github.stream29.mcp.device.protocol.CreateAuthKeyRequest
 import io.github.stream29.mcp.device.protocol.CreatedAuthKey
 import io.github.stream29.mcp.device.protocol.DeviceEnrollmentToken
+import io.github.stream29.mcp.device.protocol.DeviceListUpdateEvent
 import io.github.stream29.mcp.device.protocol.DeviceSummary
 import io.github.stream29.mcp.device.protocol.PasswordLoginRequest
 import io.github.stream29.mcp.device.protocol.ProtocolJson
@@ -34,6 +35,8 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.js.Js
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.sse.SSE
+import io.ktor.client.plugins.sse.sse
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -48,6 +51,11 @@ import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.browser.document
 import kotlinx.browser.window
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import org.w3c.dom.HTMLElement
@@ -61,6 +69,7 @@ private val client = HttpClient(Js) {
         }
     }
     install(ContentNegotiation) { json(ProtocolJson) }
+    install(SSE)
 }
 private val uiScope = kotlinx.coroutines.MainScope()
 
@@ -218,6 +227,18 @@ private fun DevicePanel() {
             route
                 ?.takeIf(AppRoute::requiresAuthentication)
                 ?.let { refresh(token, it) }
+        }
+    }
+
+    LaunchedEffect(accessToken, route) {
+        val token = accessToken
+        if (token == null || route != AppRoute.DEVICES) return@LaunchedEffect
+        try {
+            observeDeviceListUpdates(token) { updated ->
+                devices = updated
+            }
+        } catch (_: UnauthorizedException) {
+            forgetSession()
         }
     }
 
@@ -467,6 +488,56 @@ private fun DevicePanel() {
     }
 }
 
+private suspend fun observeDeviceListUpdates(
+    token: String,
+    onDevices: (List<DeviceSummary>) -> Unit,
+) = coroutineScope {
+    val invalidations = Channel<Unit>(Channel.CONFLATED)
+    launch {
+        while (isActive) {
+            delay(DEVICE_LIST_RECONCILIATION_MILLIS)
+            invalidations.trySend(Unit)
+        }
+    }
+    launch {
+        for (ignored in invalidations) {
+            delay(DEVICE_LIST_UPDATE_DEBOUNCE_MILLIS)
+            while (invalidations.tryReceive().isSuccess) {
+                // Collapse every pending invalidation into one authoritative refresh.
+            }
+            try {
+                onDevices(apiGet("/api/devices", token))
+            } catch (failure: UnauthorizedException) {
+                throw failure
+            } catch (_: Throwable) {
+                // The stream reconnect and periodic reconciliation will retry.
+            }
+        }
+    }
+    launch {
+        while (isActive) {
+            invalidations.trySend(Unit)
+            try {
+                client.sse(
+                    urlString = "${serverUrl()}/api/devices/events",
+                    request = { bearerAuth(token) },
+                ) {
+                    incoming.collect { event ->
+                        if (event.event == DeviceListUpdateEvent.NAME) {
+                            invalidations.trySend(Unit)
+                        }
+                    }
+                }
+                delay(DEVICE_LIST_EVENT_RECONNECT_MILLIS)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (_: Throwable) {
+                delay(DEVICE_LIST_EVENT_RECONNECT_MILLIS)
+            }
+        }
+    }
+}
+
 private suspend inline fun <reified T> publicPost(path: String, body: Any): T {
     val response = client.post("${serverUrl()}$path") {
         contentType(ContentType.Application.Json)
@@ -675,6 +746,9 @@ private const val TOKEN_KEY = "device-as-mcp.session"
 private const val AUTHORIZE_KEY = "device-as-mcp.authorize"
 private const val APP_ROOT_ID = "app"
 private const val MAX_ERROR_DETAIL_LENGTH = 512
+private const val DEVICE_LIST_UPDATE_DEBOUNCE_MILLIS = 200L
+private const val DEVICE_LIST_EVENT_RECONNECT_MILLIS = 2_000L
+private const val DEVICE_LIST_RECONCILIATION_MILLIS = 30_000L
 internal const val MAX_DEVICE_NAME_LENGTH = 100
 internal const val MAX_ACCESS_KEY_NAME_LENGTH = 100
 private const val NOT_FOUND_TITLE = "Page not found · DeviceAsMcp"

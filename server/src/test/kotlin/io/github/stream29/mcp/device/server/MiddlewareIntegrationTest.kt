@@ -166,7 +166,7 @@ class MiddlewareIntegrationTest {
     }
 
     @Test
-    fun rabbitMqExactInstanceRpcAndUnroutableFailure() = runBlocking {
+    fun rabbitMqRpcAndCrossInstanceDeviceListUpdate() = runBlocking {
         requireIntegration()
         val rabbitUrl = environment(
             "DEVICE_AS_MCP_TEST_RABBITMQ_URL",
@@ -175,7 +175,12 @@ class MiddlewareIntegrationTest {
         val callerId = InstanceId(UUID.randomUUID().toString())
         val targetId = InstanceId(UUID.randomUUID().toString())
         val received = Channel<Unit>(Channel.UNLIMITED)
-        val target = RabbitInstanceRpc(rabbitUrl, targetId) { request ->
+        val deviceListUpdates = Channel<UserId>(Channel.UNLIMITED)
+        val target = RabbitInstanceRpc(
+            rabbitUrl,
+            targetId,
+            deviceListUpdateHandler = deviceListUpdates::trySend,
+        ) { request ->
             if (request is InstanceRpcRequest.CancelOperation) received.trySend(Unit)
             InstanceRpcResponse.Accepted
         }
@@ -201,6 +206,10 @@ class MiddlewareIntegrationTest {
             withTimeout(5_000) { received.receive() }
             caller.publish(targetId, request, System.currentTimeMillis() + 5_000)
             withTimeout(5_000) { received.receive() }
+
+            val userId = UserId(UUID.randomUUID().toString())
+            caller.publishDeviceListUpdate(userId)
+            assertEquals(userId, withTimeout(5_000) { deviceListUpdates.receive() })
 
             val missing = caller.call(
                 InstanceId(UUID.randomUUID().toString()),
@@ -252,9 +261,21 @@ class MiddlewareIntegrationTest {
             OperationWaiters(),
             NoopInstanceRpc(),
         )
-        val originRpc = RabbitInstanceRpc(rabbitUrl, originId, originOperations::handleRpc)
-        val ownerRpc = RabbitInstanceRpc(rabbitUrl, ownerId, ownerOperations::handleRpc)
-        val ingressRpc = RabbitInstanceRpc(rabbitUrl, ingressId, ingressOperations::handleRpc)
+        val originRpc = RabbitInstanceRpc(
+            rabbitUrl,
+            originId,
+            handler = originOperations::handleRpc,
+        )
+        val ownerRpc = RabbitInstanceRpc(
+            rabbitUrl,
+            ownerId,
+            handler = ownerOperations::handleRpc,
+        )
+        val ingressRpc = RabbitInstanceRpc(
+            rabbitUrl,
+            ingressId,
+            handler = ingressOperations::handleRpc,
+        )
         originOperations.attachRpc(originRpc)
         ownerOperations.attachRpc(ownerRpc)
         ingressOperations.attachRpc(ingressRpc)

@@ -5,8 +5,11 @@ import com.rabbitmq.client.Channel
 import com.rabbitmq.client.Connection
 import com.rabbitmq.client.ConnectionFactory
 import com.rabbitmq.client.DeliverCallback
+import com.rabbitmq.client.LongString
 import com.rabbitmq.client.RpcClient
 import com.rabbitmq.client.RpcClientParams
+import io.github.stream29.mcp.device.protocol.DeviceListUpdateEvent
+import io.github.stream29.mcp.device.protocol.DeviceListUpdateTopology
 import io.github.stream29.mcp.device.protocol.InstanceId
 import io.github.stream29.mcp.device.protocol.InstanceRpcMethod
 import io.github.stream29.mcp.device.protocol.InstanceRpcRequest
@@ -14,6 +17,7 @@ import io.github.stream29.mcp.device.protocol.InstanceRpcResponse
 import io.github.stream29.mcp.device.protocol.InstanceRpcTopology
 import io.github.stream29.mcp.device.protocol.OperationErrorCode
 import io.github.stream29.mcp.device.protocol.ProtocolJson
+import io.github.stream29.mcp.device.protocol.UserId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
@@ -65,10 +69,15 @@ internal class NoopInstanceRpc : InstanceRpc {
 internal class RabbitInstanceRpc(
     rabbitMqUrl: String,
     private val instanceId: InstanceId,
+    private val deviceListUpdateHandler: (UserId) -> Unit = {},
     private val handler: suspend (InstanceRpcRequest) -> InstanceRpcResponse,
-) : InstanceRpc {
+) : InstanceRpc, DeviceListUpdatePublisher {
     private val connection: Connection
     private val consumerChannel: Channel
+    private val deviceListConsumerChannel: Channel
+    private val deviceListPublisherChannel: Channel
+    private val deviceListPublisherMutex = Mutex()
+    private val returnedDeviceListRoutingKey = AtomicReference<String?>()
     private val rpcClients = ConcurrentHashMap<InstanceId, TargetRpcClient>()
 
     init {
@@ -114,6 +123,28 @@ internal class RabbitInstanceRpc(
             }
             consumerChannel.basicAck(delivery.envelope.deliveryTag, false)
         }, { })
+
+        deviceListConsumerChannel = connection.createChannel()
+        deviceListConsumerChannel.exchangeDeclare(DeviceListUpdateTopology.EXCHANGE, "topic", true)
+        val deviceListQueue = DeviceListUpdateTopology.queue(instanceId)
+        deviceListConsumerChannel.queueDeclare(deviceListQueue, false, true, true, emptyMap())
+        deviceListConsumerChannel.queueBind(
+            deviceListQueue,
+            DeviceListUpdateTopology.EXCHANGE,
+            DeviceListUpdateTopology.ROUTING_KEY,
+        )
+        deviceListConsumerChannel.basicQos(64)
+        deviceListConsumerChannel.basicConsume(deviceListQueue, false, DeliverCallback { _, delivery ->
+            deviceListUpdateUser(delivery.properties, delivery.envelope.routingKey, delivery.body)
+                ?.let { userId -> runCatching { deviceListUpdateHandler(userId) } }
+            deviceListConsumerChannel.basicAck(delivery.envelope.deliveryTag, false)
+        }, { })
+
+        deviceListPublisherChannel = connection.createChannel()
+        deviceListPublisherChannel.confirmSelect()
+        deviceListPublisherChannel.addReturnListener { returned ->
+            returnedDeviceListRoutingKey.set(returned.routingKey)
+        }
     }
 
     override suspend fun call(
@@ -185,10 +216,39 @@ internal class RabbitInstanceRpc(
         }
     }
 
-    override suspend fun isReady(): Boolean = connection.isOpen && consumerChannel.isOpen
+    override suspend fun publishDeviceListUpdate(userId: UserId) = withContext(Dispatchers.IO) {
+        deviceListPublisherMutex.withLock {
+            returnedDeviceListRoutingKey.set(null)
+            val properties = AMQP.BasicProperties.Builder()
+                .type(DeviceListUpdateEvent.NAME)
+                .deliveryMode(1)
+                .expiration(DEVICE_LIST_UPDATE_TTL_MILLIS.toString())
+                .headers(mapOf(DeviceListUpdateTopology.USER_ID_HEADER to userId.value))
+                .build()
+            deviceListPublisherChannel.basicPublish(
+                DeviceListUpdateTopology.EXCHANGE,
+                DeviceListUpdateTopology.ROUTING_KEY,
+                true,
+                properties,
+                EMPTY_BODY,
+            )
+            deviceListPublisherChannel.waitForConfirmsOrDie(DEFAULT_CONFIRM_TIMEOUT_MILLIS)
+            check(returnedDeviceListRoutingKey.get() == null) {
+                "No server instance queue accepted the device-list update"
+            }
+        }
+    }
+
+    override suspend fun isReady(): Boolean =
+        connection.isOpen &&
+            consumerChannel.isOpen &&
+            deviceListConsumerChannel.isOpen &&
+            deviceListPublisherChannel.isOpen
 
     override fun close() {
         rpcClients.values.forEach { runCatching { it.client.close() } }
+        runCatching { deviceListPublisherChannel.close() }
+        runCatching { deviceListConsumerChannel.close() }
         runCatching { consumerChannel.close() }
         runCatching { connection.close() }
     }
@@ -230,6 +290,27 @@ internal class RabbitInstanceRpc(
         is InstanceRpcRequest.CancelOperation -> InstanceRpcMethod.CANCEL_OPERATION
     }
 
+    private fun deviceListUpdateUser(
+        properties: AMQP.BasicProperties,
+        routingKey: String,
+        body: ByteArray,
+    ): UserId? {
+        if (
+            properties.type != DeviceListUpdateEvent.NAME ||
+            routingKey != DeviceListUpdateTopology.ROUTING_KEY ||
+            body.isNotEmpty()
+        ) {
+            return null
+        }
+        val rawUserId = when (val value = properties.headers?.get(DeviceListUpdateTopology.USER_ID_HEADER)) {
+            is LongString -> String(value.bytes, StandardCharsets.UTF_8)
+            is ByteArray -> String(value, StandardCharsets.UTF_8)
+            is String -> value
+            else -> null
+        } ?: return null
+        return runCatching { UserId(rawUserId) }.getOrNull()
+    }
+
     private data class TargetRpcClient(
         val client: RpcClient,
         val mutex: Mutex = Mutex(),
@@ -249,5 +330,8 @@ internal class RabbitInstanceRpc(
 
     companion object {
         private const val MAX_RPC_BODY_BYTES = 1024 * 1024
+        private const val DEVICE_LIST_UPDATE_TTL_MILLIS = 30_000L
+        private const val DEFAULT_CONFIRM_TIMEOUT_MILLIS = 5_000L
+        private val EMPTY_BODY = ByteArray(0)
     }
 }

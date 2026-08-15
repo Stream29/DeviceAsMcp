@@ -5,6 +5,7 @@ import io.github.stream29.mcp.device.protocol.CreateAuthKeyRequest
 import io.github.stream29.mcp.device.protocol.DaemonEnrollmentRequest
 import io.github.stream29.mcp.device.protocol.DeviceCredential
 import io.github.stream29.mcp.device.protocol.DeviceEnrollmentToken
+import io.github.stream29.mcp.device.protocol.DeviceListUpdateEvent
 import io.github.stream29.mcp.device.protocol.DeviceSummary
 import io.github.stream29.mcp.device.protocol.FileManifest
 import io.github.stream29.mcp.device.protocol.FileManifestEntry
@@ -20,6 +21,8 @@ import io.github.stream29.mcp.device.protocol.RenameDeviceRequest
 import io.github.stream29.mcp.device.protocol.TransferId
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.plugins.sse.SSE
+import io.ktor.client.plugins.sse.sse
 import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -36,16 +39,19 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.Parameters
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.testing.testApplication
+import io.ktor.sse.ServerSentEvent
 import io.ktor.utils.io.readAvailable
 import java.util.UUID
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -130,6 +136,103 @@ class ApplicationTest {
             HttpStatusCode.Unauthorized,
             jsonClient.get("/api/me") { bearer(session.accessToken) }.status,
         )
+    }
+
+    @Test
+    fun deviceListSseRequiresAuthenticationAndStreamsInvalidations() = testApplication {
+        val runtime = testRuntime()
+        application { deviceAsMcpModule(runtime) }
+        val unauthorized = client.get("/api/devices/events") {
+            header(HttpHeaders.Accept, ContentType.Text.EventStream)
+        }
+        assertEquals(HttpStatusCode.Unauthorized, unauthorized.status)
+
+        val user = requireNotNull(runtime.accounts.register("device-events", "long enough password"))
+        val session = runtime.accounts.issueSession(user)
+        val jsonClient = createClient { install(ContentNegotiation) { json(ProtocolJson) } }
+        val eventClient = createClient { install(SSE) }
+
+        coroutineScope {
+            val updates = Channel<ServerSentEvent>(Channel.UNLIMITED)
+            val eventStream = launch {
+                eventClient.sse(
+                    urlString = "/api/devices/events",
+                    request = { bearer(session) },
+                ) {
+                    incoming.collect { event ->
+                        if (event.event == DeviceListUpdateEvent.NAME) updates.send(event)
+                    }
+                }
+            }
+            suspend fun awaitUpdate(): ServerSentEvent = withTimeout(5_000) { updates.receive() }
+
+            try {
+                val initial = awaitUpdate()
+                assertEquals("{}", initial.data)
+
+                val enrollment = runtime.accounts.createEnrollmentToken(user.id)
+                val enrolled = jsonClient.post("/daemon/enroll") {
+                    header(HttpHeaders.ContentType, ContentType.Application.Json)
+                    setBody(DaemonEnrollmentRequest(enrollment.token, "Laptop", "linux-x64"))
+                }
+                assertEquals(HttpStatusCode.Created, enrolled.status)
+                val credential = enrolled.body<DeviceCredential>()
+                awaitUpdate()
+
+                val renamed = jsonClient.put("/api/devices/${credential.deviceId.value}") {
+                    bearer(session)
+                    header(HttpHeaders.ContentType, ContentType.Application.Json)
+                    setBody(RenameDeviceRequest("Workstation"))
+                }
+                assertEquals(HttpStatusCode.NoContent, renamed.status)
+                awaitUpdate()
+
+                val daemonStream = launch {
+                    client.prepareGet("/daemon/connect?deviceId=${credential.deviceId.value}") {
+                        header("X-Device-Secret", credential.secret)
+                        header(HttpHeaders.Accept, ContentType.Text.EventStream)
+                    }.execute { response ->
+                        assertEquals(HttpStatusCode.OK, response.status)
+                        val channel = response.bodyAsChannel()
+                        val buffer = ByteArray(1_024)
+                        while (channel.readAvailable(buffer) >= 0) {
+                            // Keep the daemon connected until the test cancels the stream.
+                        }
+                    }
+                }
+                try {
+                    awaitUpdate()
+                    val online = jsonClient.get("/api/devices") {
+                        bearer(session)
+                    }.body<List<DeviceSummary>>().single()
+                    assertTrue(online.online)
+                    val owner = requireNotNull(runtime.routing.deviceOwner(credential.deviceId))
+                    assertTrue(runtime.connections.disconnect(credential.deviceId, owner.connectionId))
+                    withTimeout(5_000) { daemonStream.join() }
+                } finally {
+                    daemonStream.cancelAndJoin()
+                }
+
+                awaitUpdate()
+                val offline = jsonClient.get("/api/devices") {
+                    bearer(session)
+                }.body<List<DeviceSummary>>().single()
+                assertFalse(offline.online)
+
+                val revoked = jsonClient.delete("/api/devices/${credential.deviceId.value}") {
+                    bearer(session)
+                }
+                assertEquals(HttpStatusCode.NoContent, revoked.status)
+                awaitUpdate()
+                assertTrue(
+                    jsonClient.get("/api/devices") {
+                        bearer(session)
+                    }.body<List<DeviceSummary>>().isEmpty(),
+                )
+            } finally {
+                eventStream.cancelAndJoin()
+            }
+        }
     }
 
     @Test

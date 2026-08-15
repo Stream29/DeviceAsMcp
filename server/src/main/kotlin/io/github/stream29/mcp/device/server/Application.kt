@@ -5,6 +5,7 @@ import io.github.stream29.mcp.device.protocol.ConnectionId
 import io.github.stream29.mcp.device.protocol.CreateAuthKeyRequest
 import io.github.stream29.mcp.device.protocol.DaemonEnrollmentRequest
 import io.github.stream29.mcp.device.protocol.DeviceId
+import io.github.stream29.mcp.device.protocol.DeviceListUpdateEvent
 import io.github.stream29.mcp.device.protocol.FileTransferContentRequest
 import io.github.stream29.mcp.device.protocol.FileTransferFailureRequest
 import io.github.stream29.mcp.device.protocol.FileTransferFinishRequest
@@ -55,19 +56,24 @@ import io.ktor.server.routing.routing
 import io.ktor.server.sse.SSE
 import io.ktor.server.sse.sse
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.sse.ServerSentEvent
 import io.ktor.util.AttributeKey
 import io.ktor.utils.io.copyTo
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
+import org.slf4j.LoggerFactory
 import java.net.URI
 import java.util.UUID
 
@@ -94,6 +100,9 @@ private data class DaemonConnectionContext(
 private val DaemonConnectionContextKey =
     AttributeKey<DaemonConnectionContext>("DaemonConnectionContext")
 
+private val DeviceListEventUserKey =
+    AttributeKey<io.github.stream29.mcp.device.protocol.AuthenticatedUser>("DeviceListEventUser")
+
 internal class ServerRuntime(
     val config: ServerConfig,
     val accounts: AccountStore,
@@ -103,11 +112,22 @@ internal class ServerRuntime(
     val relay: FileRelayRegistry = FileRelayRegistry(),
 ) : AutoCloseable {
     private val noopRpc = NoopInstanceRpc()
+    val deviceListUpdates = DeviceListUpdateSubscriptions()
     val operations = OperationService(config.instanceId, routing, connections, waiters, noopRpc)
     val fileTransfers = FileTransferService(config.instanceId, accounts, routing, operations, relay)
     val oauth = OAuthService(config, accounts, routing)
-    val rpc: InstanceRpc =
-        config.rabbitMqUrl?.let { RabbitInstanceRpc(it, config.instanceId, operations::handleRpc) } ?: noopRpc
+    private val rabbitMessaging = config.rabbitMqUrl?.let {
+        RabbitInstanceRpc(
+            it,
+            config.instanceId,
+            deviceListUpdateHandler = deviceListUpdates::notify,
+            handler = operations::handleRpc,
+        )
+    }
+    val rpc: InstanceRpc = rabbitMessaging ?: noopRpc
+    private val deviceListUpdatePublisher: DeviceListUpdatePublisher =
+        rabbitMessaging ?: LocalDeviceListUpdatePublisher(deviceListUpdates)
+    private val deviceListUpdateScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
         operations.attachRpc(rpc)
@@ -124,7 +144,20 @@ internal class ServerRuntime(
         )
     }
 
+    fun announceDeviceListUpdate(userId: UserId) {
+        deviceListUpdateScope.launch {
+            try {
+                deviceListUpdatePublisher.publishDeviceListUpdate(userId)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: Throwable) {
+                logger.warn("Failed to publish a device-list update", failure)
+            }
+        }
+    }
+
     override fun close() {
+        deviceListUpdateScope.cancel()
         relay.close()
         oauth.close()
         rpc.close()
@@ -145,6 +178,7 @@ internal class ServerRuntime(
 
     companion object {
         private const val READINESS_COMPONENT_TIMEOUT_MILLIS = 2_000L
+        private val logger = LoggerFactory.getLogger(ServerRuntime::class.java)
     }
 }
 
@@ -422,6 +456,40 @@ private fun io.ktor.server.routing.Route.managementRoutes(runtime: ServerRuntime
             val user = call.requireManagementUser(runtime.accounts) ?: return@get
             call.respond(user)
         }
+        route("/devices/events", HttpMethod.Get) {
+            @Suppress("DEPRECATION")
+            intercept(ApplicationCallPipeline.Plugins) {
+                val user = call.managementToken()?.let { runtime.accounts.userByToken(it) }
+                if (user == null) {
+                    call.respond(HttpStatusCode.Unauthorized)
+                    finish()
+                    return@intercept
+                }
+                call.attributes.put(DeviceListEventUserKey, user)
+            }
+            sse {
+                val user = call.attributes[DeviceListEventUserKey]
+                call.response.header(HttpHeaders.CacheControl, "no-cache, no-transform")
+                call.response.header("X-Accel-Buffering", "no")
+                val subscription = runtime.deviceListUpdates.subscribe(user.id)
+                try {
+                    sendDeviceListUpdate()
+                    while (true) {
+                        val updated = withTimeoutOrNull(DEVICE_LIST_EVENT_KEEPALIVE_MILLIS) {
+                            subscription.awaitUpdate()
+                            true
+                        } ?: false
+                        if (updated) {
+                            sendDeviceListUpdate()
+                        } else {
+                            send(ServerSentEvent(comments = "keepalive"))
+                        }
+                    }
+                } finally {
+                    subscription.close()
+                }
+            }
+        }
         get("/devices") {
             val user = call.requireManagementUser(runtime.accounts) ?: return@get
             call.respond(
@@ -436,6 +504,7 @@ private fun io.ktor.server.routing.Route.managementRoutes(runtime: ServerRuntime
                 ?: return@put call.respond(HttpStatusCode.BadRequest)
             val request = call.receive<RenameDeviceRequest>()
             if (runtime.accounts.renameDevice(user.id, deviceId, request.name)) {
+                runtime.announceDeviceListUpdate(user.id)
                 call.respond(HttpStatusCode.NoContent)
             } else {
                 call.respond(HttpStatusCode.NotFound)
@@ -446,6 +515,7 @@ private fun io.ktor.server.routing.Route.managementRoutes(runtime: ServerRuntime
             val deviceId = call.parameters["id"]?.let(::DeviceId)
                 ?: return@delete call.respond(HttpStatusCode.BadRequest)
             if (runtime.accounts.revokeDevice(user.id, deviceId)) {
+                runtime.announceDeviceListUpdate(user.id)
                 try {
                     runtime.operations.disconnectDevice(deviceId)
                 } catch (failure: kotlinx.coroutines.CancellationException) {
@@ -517,9 +587,11 @@ private fun io.ktor.server.routing.Route.daemonRoutes(runtime: ServerRuntime) {
         val request = call.receive<DaemonEnrollmentRequest>()
         val userId = runtime.accounts.consumeEnrollmentToken(request.token)
             ?: return@post call.respond(HttpStatusCode.Unauthorized, mapOf("error" to "invalid or expired token"))
+        val credential = runtime.accounts.enrollDevice(userId, request.name, request.platform)
+        runtime.announceDeviceListUpdate(userId)
         call.respond(
             HttpStatusCode.Created,
-            runtime.accounts.enrollDevice(userId, request.name, request.platform),
+            credential,
         )
     }
     post("/daemon/browser-login") {
@@ -598,6 +670,7 @@ private fun io.ktor.server.routing.Route.daemonRoutes(runtime: ServerRuntime) {
                 runtime.routing.releaseDevice(context.deviceId, owner)
                 return@sse
             }
+            runtime.announceDeviceListUpdate(context.userId)
             val renewJob = CoroutineScope(coroutineContext).launch {
                 while (isActive) {
                     delay(OperationService.OWNER_RENEW_MILLIS)
@@ -619,7 +692,9 @@ private fun io.ktor.server.routing.Route.daemonRoutes(runtime: ServerRuntime) {
             } finally {
                 renewJob.cancel()
                 runtime.connections.remove(context.deviceId, connectionId)
-                runtime.routing.releaseDevice(context.deviceId, owner)
+                if (runtime.routing.releaseDevice(context.deviceId, owner)) {
+                    runtime.announceDeviceListUpdate(context.userId)
+                }
             }
         }
     }
@@ -1049,6 +1124,16 @@ private fun ApplicationCall.managementToken(): String? {
     return bearer ?: request.cookies[SESSION_COOKIE]
 }
 
+private suspend fun io.ktor.server.sse.ServerSSESession.sendDeviceListUpdate() {
+    send(
+        ServerSentEvent(
+            data = "{}",
+            event = DeviceListUpdateEvent.NAME,
+            retry = DEVICE_LIST_EVENT_RETRY_MILLIS,
+        ),
+    )
+}
+
 private suspend fun ApplicationCall.authenticatedDevice(runtime: ServerRuntime): DeviceId? {
     val value = parameters["deviceId"] ?: request.headers[DEVICE_ID_HEADER]
     val deviceId = value?.let(::DeviceId)
@@ -1139,6 +1224,8 @@ private const val SESSION_COOKIE = "device_as_mcp_session"
 private const val SESSION_COOKIE_MAX_AGE_SECONDS = 30L * 24 * 60 * 60
 private const val GITHUB_STATE_COOKIE = "device_as_mcp_github_state"
 private const val GITHUB_STATE_COOKIE_MAX_AGE_SECONDS = 10 * 60
+private const val DEVICE_LIST_EVENT_KEEPALIVE_MILLIS = 15_000L
+private const val DEVICE_LIST_EVENT_RETRY_MILLIS = 2_000L
 private const val RELAY_WAIT_TIMEOUT_MILLIS = 30_000L
 private const val RELAY_MANIFEST_WAIT_TIMEOUT_MILLIS = 30_000L
 private const val RELAY_MANIFEST_POLL_MILLIS = 50L

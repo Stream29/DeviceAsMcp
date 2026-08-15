@@ -96,6 +96,17 @@ class ProtocolTest {
     }
 
     @Test
+    fun deviceListUpdateTopologyUsesOneInstanceQueue() {
+        val id = InstanceId("instance-1")
+        assertEquals("device_list.update", DeviceListUpdateEvent.NAME)
+        assertEquals(
+            "device_as_mcp.device_list_updates.instance-1",
+            DeviceListUpdateTopology.queue(id),
+        )
+        assertEquals(DeviceListUpdateEvent.NAME, DeviceListUpdateTopology.ROUTING_KEY)
+    }
+
+    @Test
     fun manifestRejectsTraversal() {
         assertTrue(isSafeRelativePath("folder/file.txt"))
         assertFalse(isSafeRelativePath("../secret"))
