@@ -45,19 +45,27 @@ jobs:
           - runner: ubuntu-24.04
             task: :daemon:linkReleaseExecutableLinuxX64
             source: daemon/build/bin/linuxX64/releaseExecutable/daemon.kexe
-            asset: device-as-mcp-linux-x64
+            binary: device-as-mcp
+            archive: device-as-mcp-linux-x64.tar.gz
+            format: tar.gz
           - runner: ubuntu-24.04
             task: :daemon:linkReleaseExecutableLinuxArm64
             source: daemon/build/bin/linuxArm64/releaseExecutable/daemon.kexe
-            asset: device-as-mcp-linux-arm64
+            binary: device-as-mcp
+            archive: device-as-mcp-linux-arm64.tar.gz
+            format: tar.gz
           - runner: macos-14
             task: :daemon:linkReleaseExecutableMacosArm64
             source: daemon/build/bin/macosArm64/releaseExecutable/daemon.kexe
-            asset: device-as-mcp-macos-arm64
+            binary: device-as-mcp
+            archive: device-as-mcp-macos-arm64.tar.gz
+            format: tar.gz
           - runner: windows-2025
             task: :daemon:linkReleaseExecutableMingwX64
             source: daemon/build/bin/mingwX64/releaseExecutable/daemon.exe
-            asset: device-as-mcp-windows-x64.exe
+            binary: device-as-mcp.exe
+            archive: device-as-mcp-windows-x64.zip
+            format: zip
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out sources
@@ -72,7 +80,7 @@ jobs:
         shell: bash
         run: ./gradlew --stacktrace "${{ matrix.task }}"
       - name: Validate Windows installer
-        if: matrix.asset == 'device-as-mcp-windows-x64.exe'
+        if: matrix.format == 'zip'
         shell: powershell
         run: |
           $tokens = $null
@@ -86,16 +94,38 @@ jobs:
               $errors | ForEach-Object { Write-Error $_ }
               throw "PowerShell installer syntax validation failed."
           }
-      - name: Stage release asset
+      - name: Stage POSIX release archive
+        if: matrix.format == 'tar.gz'
         shell: bash
         run: |
-          mkdir -p dist
-          cp "${{ matrix.source }}" "dist/${{ matrix.asset }}"
-      - name: Upload native executable
+          mkdir -p dist/package
+          cp "${{ matrix.source }}" "dist/package/${{ matrix.binary }}"
+          chmod 755 "dist/package/${{ matrix.binary }}"
+          tar -C dist/package -czf "dist/${{ matrix.archive }}" "${{ matrix.binary }}"
+          test "$(tar -tzf "dist/${{ matrix.archive }}")" = "${{ matrix.binary }}"
+      - name: Stage Windows release archive
+        if: matrix.format == 'zip'
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/package" | Out-Null
+          Copy-Item "${{ matrix.source }}" "dist/package/${{ matrix.binary }}"
+          Compress-Archive `
+              -LiteralPath "dist/package/${{ matrix.binary }}" `
+              -DestinationPath "dist/${{ matrix.archive }}"
+          Expand-Archive `
+              -LiteralPath "dist/${{ matrix.archive }}" `
+              -DestinationPath "dist/verify"
+          $files = @(Get-ChildItem -LiteralPath "dist/verify" -File -Recurse)
+          $directories = @(Get-ChildItem -LiteralPath "dist/verify" -Directory -Recurse)
+          $expectedPath = Join-Path (Resolve-Path "dist/verify").Path "${{ matrix.binary }}"
+          if ($files.Count -ne 1 -or $directories.Count -ne 0 -or $files[0].FullName -ne $expectedPath) {
+              throw "Unexpected Windows archive contents."
+          }
+      - name: Upload compressed daemon
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ${{ matrix.asset }}
-          path: dist/${{ matrix.asset }}
+          name: ${{ matrix.archive }}
+          path: dist/${{ matrix.archive }}
           if-no-files-found: error
 
   release:
@@ -107,7 +137,7 @@ jobs:
     steps:
       - name: Check out sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Download native executables
+      - name: Download compressed daemons
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
@@ -119,7 +149,11 @@ jobs:
           chmod 755 dist/install-device-as-mcp.sh
           (
             cd dist
-            sha256sum device-as-mcp-* install-device-as-mcp.* > SHA256SUMS
+            sha256sum \
+              device-as-mcp-*.tar.gz \
+              device-as-mcp-*.zip \
+              install-device-as-mcp.* \
+              > SHA256SUMS
           )
       - name: Create GitHub release
         env:

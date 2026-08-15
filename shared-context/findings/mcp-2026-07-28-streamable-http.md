@@ -33,3 +33,7 @@
 - User affinity is an optimization only; Redis records the actual device-connection owner and cross-instance operations use RabbitMQ RPC fallback.
 - The authorization server supports Client ID Metadata Documents, pre-registration, and Dynamic Client Registration.
 - A management-panel auth key is a revocable, long-lived opaque access token issued for the remote MCP resource audience.
+- Codex 0.147.0 initializes Streamable HTTP with protocol revision `2025-06-18`.
+- The server accepts that revision as a stateless compatibility path only when the `2026-07-28` request metadata is absent.
+- The compatibility path supports `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` without issuing a session ID or exposing a GET stream.
+- Codex and Kodex read this server from the private `~/.codex/config.toml` MCP configuration.

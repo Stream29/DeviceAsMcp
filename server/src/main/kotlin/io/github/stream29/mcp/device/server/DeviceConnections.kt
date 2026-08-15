@@ -20,6 +20,7 @@ internal data class LocalDeviceConnection(
     val deviceId: DeviceId,
     val connectionId: ConnectionId,
     val session: ServerSSESession,
+    val ended: CompletableDeferred<Unit>,
 ) {
     val sendMutex = Mutex()
 }
@@ -35,6 +36,13 @@ internal class DeviceConnectionRegistry {
         val current = connections[deviceId] ?: return false
         if (current.connectionId != connectionId) return false
         return connections.remove(deviceId, current)
+    }
+
+    fun disconnect(deviceId: DeviceId, connectionId: ConnectionId): Boolean {
+        val connection = connections[deviceId] ?: return false
+        if (connection.connectionId != connectionId) return false
+        connection.ended.complete(Unit)
+        return true
     }
 
     suspend fun send(deviceId: DeviceId, connectionId: ConnectionId, operation: OperationEnvelope): Boolean {

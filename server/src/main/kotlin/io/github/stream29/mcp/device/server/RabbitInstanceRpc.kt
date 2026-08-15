@@ -223,6 +223,7 @@ internal class RabbitInstanceRpc(
     private fun method(request: InstanceRpcRequest): String = when (request) {
         is InstanceRpcRequest.DispatchOperation -> InstanceRpcMethod.DISPATCH_OPERATION
         is InstanceRpcRequest.ForwardOperationResult -> InstanceRpcMethod.FORWARD_OPERATION_RESULT
+        is InstanceRpcRequest.DisconnectDevice -> InstanceRpcMethod.DISCONNECT_DEVICE
         is InstanceRpcRequest.PrepareFileSource -> InstanceRpcMethod.PREPARE_FILE_SOURCE
         is InstanceRpcRequest.PrepareFileDestination -> InstanceRpcMethod.PREPARE_FILE_DESTINATION
         is InstanceRpcRequest.CancelFileTransfer -> InstanceRpcMethod.CANCEL_FILE_TRANSFER

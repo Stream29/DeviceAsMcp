@@ -19,6 +19,7 @@ import io.github.stream29.mcp.device.protocol.ProtocolJson
 import io.github.stream29.mcp.device.protocol.RegisterRequest
 import io.github.stream29.mcp.device.protocol.RenameDeviceRequest
 import io.github.stream29.mcp.device.protocol.TransferId
+import io.github.stream29.mcp.device.protocol.UserId
 import io.ktor.http.ContentType
 import io.ktor.http.Cookie
 import io.ktor.http.CookieEncoding
@@ -28,6 +29,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.ApplicationCallPipeline
 import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
@@ -45,6 +47,7 @@ import io.ktor.server.response.respondRedirect
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
+import io.ktor.server.routing.intercept
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
 import io.ktor.server.routing.route
@@ -52,6 +55,7 @@ import io.ktor.server.routing.routing
 import io.ktor.server.sse.SSE
 import io.ktor.server.sse.sse
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.util.AttributeKey
 import io.ktor.utils.io.copyTo
 import io.ktor.utils.io.readAvailable
 import kotlinx.coroutines.CompletableDeferred
@@ -81,6 +85,14 @@ internal data class RuntimeReadiness(
 ) {
     val ready: Boolean = accounts && routing && instanceRpc
 }
+
+private data class DaemonConnectionContext(
+    val userId: UserId,
+    val deviceId: DeviceId,
+)
+
+private val DaemonConnectionContextKey =
+    AttributeKey<DaemonConnectionContext>("DaemonConnectionContext")
 
 internal class ServerRuntime(
     val config: ServerConfig,
@@ -429,6 +441,26 @@ private fun io.ktor.server.routing.Route.managementRoutes(runtime: ServerRuntime
                 call.respond(HttpStatusCode.NotFound)
             }
         }
+        delete("/devices/{id}") {
+            val user = call.requireManagementUser(runtime.accounts) ?: return@delete
+            val deviceId = call.parameters["id"]?.let(::DeviceId)
+                ?: return@delete call.respond(HttpStatusCode.BadRequest)
+            if (runtime.accounts.revokeDevice(user.id, deviceId)) {
+                try {
+                    runtime.operations.disconnectDevice(deviceId)
+                } catch (failure: kotlinx.coroutines.CancellationException) {
+                    throw failure
+                } catch (failure: Exception) {
+                    call.application.environment.log.warn(
+                        "Device ${deviceId.value} was revoked, but its connection could not be ended immediately",
+                        failure,
+                    )
+                }
+                call.respond(HttpStatusCode.NoContent)
+            } else {
+                call.respond(HttpStatusCode.NotFound)
+            }
+        }
         post("/enrollment-token") {
             val user = call.requireManagementUser(runtime.accounts) ?: return@post
             call.respond(HttpStatusCode.Created, runtime.accounts.createEnrollmentToken(user.id))
@@ -505,58 +537,90 @@ private fun io.ktor.server.routing.Route.daemonRoutes(runtime: ServerRuntime) {
         }
     }
 
-    sse("/daemon/connect") {
-        val deviceId = call.request.queryParameters["deviceId"]?.let(::DeviceId)
-            ?: return@sse call.respond(HttpStatusCode.BadRequest)
-        val secret = call.request.headers[DEVICE_SECRET_HEADER]
-            ?: return@sse call.respond(HttpStatusCode.Unauthorized)
-        if (!runtime.accounts.authenticateDevice(deviceId, secret)) {
-            return@sse call.respond(HttpStatusCode.Unauthorized)
+    route("/daemon/connect", HttpMethod.Get) {
+        @Suppress("DEPRECATION")
+        intercept(ApplicationCallPipeline.Plugins) {
+            val deviceId = call.request.queryParameters["deviceId"]?.let(::DeviceId)
+            if (deviceId == null) {
+                call.respond(HttpStatusCode.BadRequest)
+                finish()
+                return@intercept
+            }
+            val secret = call.request.headers[DEVICE_SECRET_HEADER]
+            if (secret == null || !runtime.accounts.authenticateDevice(deviceId, secret)) {
+                call.respond(HttpStatusCode.Unauthorized)
+                finish()
+                return@intercept
+            }
+            val userId = runtime.accounts.deviceUser(deviceId)
+            if (userId == null) {
+                call.respond(HttpStatusCode.Unauthorized)
+                finish()
+                return@intercept
+            }
+            call.attributes.put(
+                DaemonConnectionContextKey,
+                DaemonConnectionContext(userId, deviceId),
+            )
         }
-        call.response.header("X-Accel-Buffering", "no")
-        val userId = runtime.accounts.deviceUser(deviceId)
-            ?: return@sse call.respond(HttpStatusCode.Unauthorized)
-        val connectionId = ConnectionId(UUID.randomUUID().toString())
-        val owner = DeviceOwner(
-            runtime.config.instanceId,
-            connectionId,
-            System.currentTimeMillis() + OperationService.OWNER_TTL_MILLIS,
-        )
-        if (!runtime.routing.claimDevice(deviceId, owner)) {
-            return@sse call.respond(HttpStatusCode.Conflict)
-        }
-        val connection = LocalDeviceConnection(userId, deviceId, connectionId, this)
-        if (!runtime.connections.put(connection)) {
-            runtime.routing.releaseDevice(deviceId, owner)
-            return@sse call.respond(HttpStatusCode.Conflict)
-        }
-        if (!runtime.connections.keepAlive(deviceId, connectionId)) {
-            runtime.connections.remove(deviceId, connectionId)
-            runtime.routing.releaseDevice(deviceId, owner)
-            return@sse
-        }
-        val connectionEnded = CompletableDeferred<Unit>()
-        val renewJob = CoroutineScope(coroutineContext).launch {
-            while (isActive) {
-                delay(OperationService.OWNER_RENEW_MILLIS)
-                val renewed = owner.copy(
-                    expiresAtEpochMillis = System.currentTimeMillis() + OperationService.OWNER_TTL_MILLIS,
-                )
-                if (
-                    !runtime.routing.renewDevice(deviceId, renewed) ||
-                    !runtime.connections.keepAlive(deviceId, connectionId)
-                ) {
-                    connectionEnded.complete(Unit)
-                    break
+        sse {
+            val context = call.attributes[DaemonConnectionContextKey]
+            val connectionId = ConnectionId(UUID.randomUUID().toString())
+            val owner = DeviceOwner(
+                runtime.config.instanceId,
+                connectionId,
+                System.currentTimeMillis() + OperationService.OWNER_TTL_MILLIS,
+            )
+            if (!runtime.routing.claimDevice(context.deviceId, owner)) return@sse
+            val connectionEnded = CompletableDeferred<Unit>()
+            val connection = LocalDeviceConnection(
+                context.userId,
+                context.deviceId,
+                connectionId,
+                this,
+                connectionEnded,
+            )
+            if (!runtime.connections.put(connection)) {
+                runtime.routing.releaseDevice(context.deviceId, owner)
+                return@sse
+            }
+            // Revocation can commit after the pre-SSE check but before this connection is registered.
+            val stillAuthenticated = call.request.headers[DEVICE_SECRET_HEADER]
+                ?.let { runtime.accounts.authenticateDevice(context.deviceId, it) }
+                ?: false
+            if (!stillAuthenticated) {
+                runtime.connections.remove(context.deviceId, connectionId)
+                runtime.routing.releaseDevice(context.deviceId, owner)
+                return@sse
+            }
+            if (!runtime.connections.keepAlive(context.deviceId, connectionId)) {
+                runtime.connections.remove(context.deviceId, connectionId)
+                runtime.routing.releaseDevice(context.deviceId, owner)
+                return@sse
+            }
+            val renewJob = CoroutineScope(coroutineContext).launch {
+                while (isActive) {
+                    delay(OperationService.OWNER_RENEW_MILLIS)
+                    val renewed = owner.copy(
+                        expiresAtEpochMillis =
+                            System.currentTimeMillis() + OperationService.OWNER_TTL_MILLIS,
+                    )
+                    if (
+                        !runtime.routing.renewDevice(context.deviceId, renewed) ||
+                        !runtime.connections.keepAlive(context.deviceId, connectionId)
+                    ) {
+                        connectionEnded.complete(Unit)
+                        break
+                    }
                 }
             }
-        }
-        try {
-            connectionEnded.await()
-        } finally {
-            renewJob.cancel()
-            runtime.connections.remove(deviceId, connectionId)
-            runtime.routing.releaseDevice(deviceId, owner)
+            try {
+                connectionEnded.await()
+            } finally {
+                renewJob.cancel()
+                runtime.connections.remove(context.deviceId, connectionId)
+                runtime.routing.releaseDevice(context.deviceId, owner)
+            }
         }
     }
 

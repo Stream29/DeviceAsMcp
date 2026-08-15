@@ -15,6 +15,7 @@ object InstanceRpcTopology {
 object InstanceRpcMethod {
     const val DISPATCH_OPERATION = "dispatch-operation.v1"
     const val FORWARD_OPERATION_RESULT = "forward-operation-result.v1"
+    const val DISCONNECT_DEVICE = "disconnect-device.v1"
     const val PREPARE_FILE_SOURCE = "prepare-file-source.v1"
     const val PREPARE_FILE_DESTINATION = "prepare-file-destination.v1"
     const val CANCEL_FILE_TRANSFER = "cancel-file-transfer.v1"
@@ -37,6 +38,13 @@ sealed interface InstanceRpcRequest {
         val userId: UserId,
         val deviceId: DeviceId,
         val result: OperationResultEnvelope,
+    ) : InstanceRpcRequest
+
+    @Serializable
+    @SerialName(InstanceRpcMethod.DISCONNECT_DEVICE)
+    data class DisconnectDevice(
+        val deviceId: DeviceId,
+        val connectionId: ConnectionId,
     ) : InstanceRpcRequest
 
     @Serializable

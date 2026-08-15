@@ -70,6 +70,9 @@ docker compose \
   logs --tail=200 server web
 ```
 
+The provided Caddy configuration removes authorization headers, cookies,
+device secrets, and OAuth query credentials from runtime logs.
+
 ## Upgrade
 
 Create a PostgreSQL backup before upgrading. Then rebuild and recreate changed

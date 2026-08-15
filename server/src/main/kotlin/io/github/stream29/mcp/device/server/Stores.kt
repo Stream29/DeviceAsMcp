@@ -336,6 +336,7 @@ internal interface AccountStore {
     suspend fun enrollDevice(userId: UserId, name: String, platform: String): DeviceCredential
     suspend fun devices(userId: UserId): List<DeviceSummary>
     suspend fun renameDevice(userId: UserId, deviceId: DeviceId, name: String): Boolean
+    suspend fun revokeDevice(userId: UserId, deviceId: DeviceId): Boolean
     suspend fun deviceUser(deviceId: DeviceId): UserId?
     suspend fun authenticateDevice(deviceId: DeviceId, secret: String): Boolean
     suspend fun findOrCreateGithubUser(githubId: String, githubLogin: String): AuthenticatedUser
@@ -500,6 +501,11 @@ internal class InMemoryAccountStore(
             devices[deviceId] = device.copy(summary = device.summary.copy(name = normalized))
             true
         }
+
+    override suspend fun revokeDevice(userId: UserId, deviceId: DeviceId): Boolean = mutex.withLock {
+        if (devices[deviceId]?.userId != userId) return@withLock false
+        devices.remove(deviceId) != null
+    }
 
     override suspend fun deviceUser(deviceId: DeviceId): UserId? = mutex.withLock { devices[deviceId]?.userId }
 

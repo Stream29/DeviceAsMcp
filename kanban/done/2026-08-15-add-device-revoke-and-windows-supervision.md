@@ -1,0 +1,63 @@
+# Task Tree
+
+- [done] Add Windows supervision and device revocation
+  - [done] Inspect existing implementation paths
+  - [done] Define lifecycle and authorization contracts
+  - [done] Replace Windows Startup VBS
+    - [done] Stop and remove the legacy launcher
+    - [done] Register a limited current-user logon task
+    - [done] Hide the supervised daemon process
+    - [done] Restart the daemon after failure
+    - [done] Replace the task idempotently
+  - [done] Add durable device revocation
+    - [done] Soft-revoke the owned device credential
+    - [done] Exclude revoked devices from authentication
+    - [done] Add an authenticated DELETE endpoint
+    - [done] Remove the current owner route
+    - [done] Disconnect the local or remote owner
+    - [done] Close the connect-versus-revoke race
+    - [done] Keep durable revocation successful if disconnect signaling fails
+    - [done] Add a confirmed destructive action
+  - [done] Refine MCP connection authentication
+    - [done] Add a Material 3 single-choice selector
+    - [done] Show only the selected authorization flow
+    - [done] Let users name access keys before creation
+    - [done] Show the full key only after creation
+    - [done] Copy a ready-to-use Codex configuration
+    - [done] Preserve active-key revocation
+  - [done] Protect authentication material in proxy logs
+    - [done] Redact sensitive headers and OAuth query values
+    - [done] Verify Caddy runtime-log filtering
+    - [done] Replace the production web container and old logs
+  - [done] Update durable documentation
+  - [done] Validate and deploy the changes
+    - [done] Run JVM, Wasm, and Native checks
+    - [done] Validate the Windows task definition
+    - [done] Verify local and cross-instance revocation
+    - [done] Deploy and verify Mac production
+  - [done] Publish release 0.1.3
+    - [done] Commit the complete snapshot as `feat: snapshot`
+    - [done] Create and push tag `v0.1.3`
+    - [done] Wait for the release workflow
+    - [done] Verify every compressed release artifact
+
+# Details
+
+- Start the Windows daemon only after the owning user logs in.
+- Keep the daemon under the owning user's permissions.
+- Do not turn the daemon into a system service.
+- Add device revoke alongside the existing rename action.
+- Make OAuth and Access Key explicit mutually exclusive connection modes.
+- Require a user-provided name when creating an access key.
+- Generate a copyable Codex configuration containing the endpoint and new key.
+- Soft-revoked devices disappear from active listings and cannot authenticate again.
+- Revocation removes the Redis owner route before signaling the owning instance.
+- Cross-instance disconnect uses the existing per-instance RabbitMQ RPC path.
+- The Windows task runs a hidden PowerShell wrapper under the interactive user.
+- Caddy filters authentication material from runtime diagnostics.
+- Mac production was backed up, rebuilt, and passed authenticated end-to-end verification.
+- The implementation and validation route is fully determined.
+- Validate server behavior locally before production deployment.
+- Do not commit partial work.
+- The user explicitly requires the final commit message `feat: snapshot`.
+- Publish the completed snapshot as release `v0.1.3`.

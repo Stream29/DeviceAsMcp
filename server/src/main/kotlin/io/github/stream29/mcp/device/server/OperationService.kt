@@ -124,6 +124,29 @@ internal class OperationService(
         }
     }
 
+    suspend fun disconnectDevice(deviceId: DeviceId) {
+        repeat(DISCONNECT_ROUTE_ATTEMPTS) {
+            val owner = routingStore.deviceOwner(deviceId)
+            if (owner == null) {
+                connections.get(deviceId)?.let { connections.disconnect(deviceId, it.connectionId) }
+                return
+            }
+            if (!routingStore.releaseDevice(deviceId, owner)) return@repeat
+            if (owner.instanceId == instanceId) {
+                connections.disconnect(deviceId, owner.connectionId)
+            } else {
+                instanceRpc.call(
+                    owner.instanceId,
+                    InstanceRpcRequest.DisconnectDevice(deviceId, owner.connectionId),
+                    System.currentTimeMillis() + DISPATCH_TIMEOUT_MILLIS,
+                    DISPATCH_TIMEOUT_MILLIS,
+                )
+            }
+            return
+        }
+        error("Device owner changed during revocation")
+    }
+
     suspend fun handleRpc(request: InstanceRpcRequest): InstanceRpcResponse = when (request) {
         is InstanceRpcRequest.DispatchOperation -> handleDispatch(request.connectionId, request.operation)
         is InstanceRpcRequest.ForwardOperationResult -> {
@@ -140,6 +163,16 @@ internal class OperationService(
                 ResultAcceptance.DUPLICATE -> InstanceRpcResponse.Duplicate
                 ResultAcceptance.UNKNOWN ->
                     InstanceRpcResponse.Rejected(OperationErrorCode.INVALID_REQUEST, "Unknown operation")
+            }
+        }
+        is InstanceRpcRequest.DisconnectDevice -> {
+            if (connections.disconnect(request.deviceId, request.connectionId)) {
+                InstanceRpcResponse.Accepted
+            } else {
+                InstanceRpcResponse.Rejected(
+                    OperationErrorCode.DEVICE_OWNER_STALE,
+                    "Local device connection not found",
+                )
             }
         }
         is InstanceRpcRequest.PrepareFileSource -> handleDispatch(request.connectionId, request.operation)
@@ -200,5 +233,6 @@ internal class OperationService(
         const val OPERATION_ATTEMPT_TIMEOUT_MILLIS = 10_000L
         const val OPERATION_TOTAL_TIMEOUT_MILLIS = 25_000L
         const val RESULT_FORWARD_TIMEOUT_MILLIS = 5_000L
+        private const val DISCONNECT_ROUTE_ATTEMPTS = 3
     }
 }

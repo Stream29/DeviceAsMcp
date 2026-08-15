@@ -1,3 +1,18 @@
+{
+	log default {
+		format filter {
+			request>headers>Authorization delete
+			request>headers>Cookie delete
+			request>headers>X-Device-Secret delete
+			request>uri query {
+				replace access_token REDACTED
+				replace code REDACTED
+				replace state REDACTED
+			}
+		}
+	}
+}
+
 {$DEVICE_AS_MCP_SITE_ADDRESS}
 
 encode zstd gzip

@@ -56,21 +56,25 @@ command -v curl >/dev/null 2>&1 || {
     printf '%s\n' 'curl is required' >&2
     exit 1
 }
+command -v tar >/dev/null 2>&1 || {
+    printf '%s\n' 'tar is required' >&2
+    exit 1
+}
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 case "$OS:$ARCH" in
     Linux:x86_64|Linux:amd64)
         PLATFORM="linux-x64"
-        ASSET="device-as-mcp-linux-x64"
+        ASSET="device-as-mcp-linux-x64.tar.gz"
         ;;
     Linux:aarch64|Linux:arm64)
         PLATFORM="linux-arm64"
-        ASSET="device-as-mcp-linux-arm64"
+        ASSET="device-as-mcp-linux-arm64.tar.gz"
         ;;
     Darwin:arm64)
         PLATFORM="macos-arm64"
-        ASSET="device-as-mcp-macos-arm64"
+        ASSET="device-as-mcp-macos-arm64.tar.gz"
         ;;
     *)
         printf 'Unsupported platform: %s %s\n' "$OS" "$ARCH" >&2
@@ -120,6 +124,18 @@ fi
     exit 1
 }
 
+BINARY_NAME="device-as-mcp"
+ARCHIVE_CONTENTS="$(tar -tzf "$TEMP_DIR/$ASSET")"
+[ "$ARCHIVE_CONTENTS" = "$BINARY_NAME" ] || {
+    printf 'Unexpected archive contents for %s\n' "$ASSET" >&2
+    exit 1
+}
+tar -xzf "$TEMP_DIR/$ASSET" -C "$TEMP_DIR" "$BINARY_NAME"
+[ -f "$TEMP_DIR/$BINARY_NAME" ] || {
+    printf 'Archive %s did not contain %s\n' "$ASSET" "$BINARY_NAME" >&2
+    exit 1
+}
+
 INSTALL_DIR="$HOME/.local/bin"
 INSTALL_PATH="$INSTALL_DIR/device-as-mcp"
 mkdir -p "$INSTALL_DIR"
@@ -135,7 +151,7 @@ case "$OS" in
         ;;
 esac
 
-install -m 700 "$TEMP_DIR/$ASSET" "$INSTALL_PATH.new"
+install -m 700 "$TEMP_DIR/$BINARY_NAME" "$INSTALL_PATH.new"
 mv -f "$INSTALL_PATH.new" "$INSTALL_PATH"
 
 printf '%s\n' 'Enrolling this device...'

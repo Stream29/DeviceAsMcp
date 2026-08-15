@@ -142,11 +142,16 @@ Generated binaries are under `daemon/build/bin/<target>/releaseExecutable/`.
 macOS cinterop must be built on macOS.
 
 The management panel generates tokenized one-click commands for every supported
-target. The installers download the latest GitHub Release binary, verify its
-SHA-256 checksum, enroll the device, and configure user-login startup through
-systemd, launchd, or the Windows Startup folder. The panel supplies its own
-server URL automatically, and the target device uses its hostname as the initial
-display name. Enrolled devices can be renamed from the panel.
+target. GitHub Releases publish `tar.gz` daemon archives for Linux and macOS and
+a `zip` archive for Windows. The installers download the matching archive,
+verify its SHA-256 checksum before extraction, enroll the device, and configure
+user-login startup through a systemd user service, a macOS LaunchAgent, or a
+limited current-user Windows Scheduled Task. Each launcher restarts the daemon
+after failure without granting it administrator privileges. The panel supplies
+its own server URL automatically, and the target device uses its hostname as the
+initial display name. Enrolled devices can be renamed or revoked from the panel.
+Revocation disconnects the current daemon and permanently invalidates its saved
+credential; reconnecting that machine requires enrollment again.
 
 Enroll with a one-time token generated in the management panel:
 
@@ -189,6 +194,10 @@ Credentials are stored in `~/.device-as-mcp/daemon.json`.
 - Authorization-server metadata: `/.well-known/oauth-authorization-server`.
 - Dynamic client registration: `POST /oauth/register`.
 - Authorization flow: authorization code with PKCE `S256`.
+
+The management panel presents OAuth and access keys as explicit alternatives.
+Access keys require a user-provided name, expose their full value only when
+created, and can copy a complete Codex `config.toml` MCP entry in one action.
 
 `GET /mcp` and `DELETE /mcp` return `405 Method Not Allowed`. The endpoint is
 stateless and does not issue `Mcp-Session-Id`.
@@ -235,6 +244,8 @@ Production gateways must:
 - Stream relay request and response bodies without buffering.
 - Use timeouts that permit long file streams.
 - Forward `Authorization`, MCP metadata, device credential, and relay headers.
+- Redact authorization headers, cookies, device secrets, and OAuth query
+  credentials from gateway logs.
 - Optionally apply user-based affinity to management and MCP requests.
 
 Correctness does not depend on user affinity. It does depend on exact relay
@@ -282,4 +293,5 @@ publishing platform artifacts.
 
 Pushing a `v*` tag runs `.github/workflows/release.yml`. The workflow validates
 the project on Linux, builds all four native targets on matching GitHub-hosted
-runners, and publishes the binaries, installers, and `SHA256SUMS`.
+runners, and publishes compressed daemon archives, installers, and
+`SHA256SUMS`.

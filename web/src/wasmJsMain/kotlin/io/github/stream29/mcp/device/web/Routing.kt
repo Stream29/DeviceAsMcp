@@ -7,7 +7,7 @@ internal enum class AppRoute(
 ) {
     LOGIN("/login", "Sign in · DeviceAsMcp", false),
     DEVICES("/devices", "Devices · DeviceAsMcp", true),
-    AUTH_KEYS("/auth-keys", "MCP auth keys · DeviceAsMcp", true),
+    AUTH_KEYS("/connect", "Connect to MCP · DeviceAsMcp", true),
 }
 
 internal fun appRouteForPath(path: String): AppRoute? {
@@ -16,7 +16,10 @@ internal fun appRouteForPath(path: String): AppRoute? {
         path == "/" -> path
         else -> path.trimEnd('/')
     }
-    return AppRoute.entries.firstOrNull { it.path == normalized }
+    return when (normalized) {
+        LEGACY_AUTH_KEYS_PATH -> AppRoute.AUTH_KEYS
+        else -> AppRoute.entries.firstOrNull { it.path == normalized }
+    }
 }
 
 internal fun canonicalAppRoute(path: String, authenticated: Boolean): AppRoute? {
@@ -28,3 +31,5 @@ internal fun canonicalAppRoute(path: String, authenticated: Boolean): AppRoute? 
         else -> route
     }
 }
+
+private const val LEGACY_AUTH_KEYS_PATH = "/auth-keys"

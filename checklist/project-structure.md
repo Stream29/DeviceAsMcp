@@ -37,6 +37,7 @@
 - Use these versioned AMQP message types:
   - `dispatch-operation.v1`.
   - `forward-operation-result.v1`.
+  - `disconnect-device.v1`.
   - `prepare-file-source.v1`.
   - `prepare-file-destination.v1`.
   - `cancel-file-transfer.v1`.
@@ -99,6 +100,11 @@
 - Finalize concrete wire-schema fields while implementing each protocol slice rather than treating the complete schema as a prerequisite for development.
 - Let the server expose each authenticated user's devices as remote MCP endpoints.
 - Support both interactive OAuth authorization and management-panel auth keys for remote MCP access.
+- Present OAuth and access keys as explicit, mutually exclusive choices in the management panel.
+- Default the connection panel to OAuth and recommend it when the client supports it.
+- Require a user-provided 1–100 character name when creating an auth key.
+- Show a newly created auth key's full value only in the current browser state.
+- Let the user copy a complete Codex `config.toml` MCP entry containing the endpoint and bearer key.
 - Implement remote MCP against protocol revision `2026-07-28`.
   - Expose one POST-only Streamable HTTP endpoint.
   - Return HTTP `405 Method Not Allowed` for GET and DELETE requests to the MCP endpoint.
@@ -114,6 +120,14 @@
   - Require and validate `MCP-Protocol-Version`, `Mcp-Method`, and applicable `Mcp-Name` headers against the JSON-RPC body.
   - Validate the HTTP `Origin` header when present.
   - Send `X-Accel-Buffering: no` on request-scoped SSE responses.
+  - Also accept stateless `2025-06-18` Streamable HTTP clients for Codex compatibility.
+    - Detect the legacy path only when 2026-only mirrored headers and modern body protocol metadata are absent.
+    - Require an optional `MCP-Protocol-Version` header on the legacy path to equal `2025-06-18`.
+    - Support `initialize`, `notifications/initialized`, `tools/list`, and `tools/call`.
+    - Do not issue a legacy session ID or expose a legacy GET stream.
+    - Keep GET and DELETE responses at HTTP `405 Method Not Allowed`.
+    - Apply the same authentication, scope, audience, content-type, accept, origin, and tool-argument validation.
+    - Keep the `2026-07-28` path strict when any modern request-metadata header is present.
 - Carry OAuth access tokens in `Authorization: Bearer` on every remote MCP HTTP request.
 - Do not accept OAuth access tokens in URI query parameters.
 - Implement remote MCP OAuth authorization against protocol revision `2026-07-28`.
@@ -142,7 +156,8 @@
 - Expose semantic management routes through browser history.
   - Use `/login` for authentication.
   - Use `/devices` for device enrollment and management.
-  - Use `/auth-keys` for remote MCP credentials.
+  - Use `/connect` for remote MCP connection setup.
+  - Redirect the legacy `/auth-keys` route to `/connect`.
   - Redirect `/` according to the current authentication state.
   - Support direct route loading through the static server's index fallback.
 - Keep viewport-wide CSS outside the body mounted by `ComposeViewport`.
@@ -190,12 +205,31 @@
   - Let the user choose Linux x64, Linux ARM64, macOS ARM64, or Windows x64.
   - Let the target device derive its initial name from its hostname.
   - Let the user rename an enrolled device from the management frontend.
+  - Let the user revoke an enrolled device after a destructive-action confirmation.
+  - Soft-revoke the device record so its credential cannot authenticate again.
+  - Reject invalid or revoked daemon credentials before starting an SSE response.
+  - Revalidate the credential after registering the local connection to close the connect-versus-revoke race.
+  - Exclude soft-revoked devices from active listings, lookup, and rename operations.
+  - Remove the current Redis owner route before ending the daemon connection.
+  - End a locally owned daemon connection directly.
+  - Use `disconnect-device.v1` RPC to end a daemon connection owned by another instance.
+  - Treat connection signaling as best effort after the durable revocation has succeeded.
+  - Require enrollment again after device revocation.
   - Let the user copy and run the command to install and authenticate the daemon.
-  - Download version-consistent installers and native binaries from GitHub Releases.
-  - Verify each downloaded native binary against the release SHA-256 manifest.
+  - Download version-consistent installers and compressed native archives from GitHub Releases.
+  - Publish Linux and macOS daemons as `tar.gz` and the Windows daemon as `zip`.
+  - Keep only `device-as-mcp` or `device-as-mcp.exe` at each archive root.
+  - Verify each downloaded archive against the release SHA-256 manifest before extraction.
+  - Extract only the expected platform executable.
   - Start the daemon at user login without requiring administrator privileges.
-- Support guided installation from a downloaded CLI binary.
-  - Let the user run the binary directly.
+  - Use a systemd user service with restart supervision on Linux when systemd is available.
+  - Use a per-user LaunchAgent with `KeepAlive` on macOS.
+  - Use a limited current-user Scheduled Task triggered at logon on Windows.
+  - Run the Windows daemon through a hidden PowerShell action.
+  - Configure the Windows task to restart the daemon after failure.
+  - Replace the Windows task idempotently and remove the legacy Startup-folder VBS launcher.
+- Support guided installation from a downloaded CLI archive.
+  - Let the user extract and run the binary directly.
   - Authenticate the user through a browser during installation.
 
 ## Local Permission Boundary
@@ -344,5 +378,7 @@
 - Run the JVM server as a non-root container user.
 - Provide a single-server production Compose topology with a Caddy HTTPS
   gateway and persistent middleware volumes.
+- Filter Caddy runtime logs to remove authorization headers, cookies, device
+  secrets, and OAuth query credentials.
 - Do not scale the provided production Compose server until its gateway can
   route relay requests by exact `X-Relay-Instance-Id`.

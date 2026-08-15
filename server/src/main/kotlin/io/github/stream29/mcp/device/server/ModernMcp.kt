@@ -45,6 +45,7 @@ import java.net.URI
 import java.util.Base64
 
 internal const val MODERN_MCP_VERSION = "2026-07-28"
+internal const val LEGACY_MCP_VERSION = "2025-06-18"
 
 internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
     suspend fun post(call: ApplicationCall) {
@@ -121,10 +122,13 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
             call.respond(HttpStatusCode.BadRequest, error(id, -32600, "Invalid JSON-RPC request"))
             return
         }
-        val metadataError = validateMetadata(call, request, method, params, id)
-        if (metadataError != null) {
-            call.respond(HttpStatusCode.BadRequest, metadataError)
-            return
+        val legacyRequest = call.isLegacyRequest(params)
+        if (!legacyRequest) {
+            val metadataError = validateMetadata(call, request, method, params, id)
+            if (metadataError != null) {
+                call.respond(HttpStatusCode.BadRequest, metadataError)
+                return
+            }
         }
         if (id == null || id is JsonNull) {
             call.respond(HttpStatusCode.Accepted)
@@ -132,7 +136,25 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
         }
 
         when (method) {
-            "server/discover" -> call.respondJson(HttpStatusCode.OK, success(id, discoverResult()))
+            "initialize" -> {
+                if (!legacyRequest) {
+                    call.respondJson(HttpStatusCode.NotFound, error(id, -32601, "Method not found"))
+                    return
+                }
+                val initializeError = validateLegacyInitialize(params, id)
+                if (initializeError != null) {
+                    call.respond(HttpStatusCode.BadRequest, initializeError)
+                    return
+                }
+                call.respondJson(HttpStatusCode.OK, success(id, legacyInitializeResult()))
+            }
+            "server/discover" -> {
+                if (legacyRequest) {
+                    call.respondJson(HttpStatusCode.NotFound, error(id, -32601, "Method not found"))
+                } else {
+                    call.respondJson(HttpStatusCode.OK, success(id, discoverResult()))
+                }
+            }
             "tools/list" -> call.respondJson(HttpStatusCode.OK, success(id, toolsResult()))
             "tools/call" -> {
                 val name = params.stringValue("name")
@@ -316,6 +338,40 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
         return route
     }
 
+    private fun ApplicationCall.isLegacyRequest(params: JsonObject): Boolean {
+        val versionHeaders = request.headers.getAll("MCP-Protocol-Version")
+        if (
+            versionHeaders != null &&
+            (versionHeaders.size != 1 || versionHeaders.single() != LEGACY_MCP_VERSION)
+        ) {
+            return false
+        }
+        if (
+            request.headers.names().any { name ->
+                name.equals("Mcp-Method", ignoreCase = true) ||
+                    name.equals("Mcp-Name", ignoreCase = true) ||
+                    name.startsWith("Mcp-Param-", ignoreCase = true)
+            }
+        ) {
+            return false
+        }
+        val metadata = params["_meta"] as? JsonObject
+        return metadata?.containsKey("io.modelcontextprotocol/protocolVersion") != true
+    }
+
+    private fun validateLegacyInitialize(params: JsonObject, id: JsonElement): JsonObject? {
+        if (params.stringValue("protocolVersion") != LEGACY_MCP_VERSION) {
+            return error(id, -32602, "Unsupported legacy protocol version")
+        }
+        if (params["capabilities"] !is JsonObject) {
+            return error(id, -32602, "Missing client capabilities")
+        }
+        if (params["clientInfo"] !is JsonObject) {
+            return error(id, -32602, "Missing client info")
+        }
+        return null
+    }
+
     private fun validateMetadata(
         call: ApplicationCall,
         request: JsonObject,
@@ -394,6 +450,18 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
         443
     } else {
         80
+    }
+
+    private fun legacyInitializeResult(): JsonObject = buildJsonObject {
+        put("protocolVersion", LEGACY_MCP_VERSION)
+        put("capabilities", buildJsonObject {
+            put("tools", buildJsonObject { put("listChanged", false) })
+        })
+        put("serverInfo", SERVER_META.getValue("io.modelcontextprotocol/serverInfo"))
+        put(
+            "instructions",
+            "Use the tools to list the caller's devices, run terminal sessions, and transfer files between devices.",
+        )
     }
 
     private fun discoverResult(): JsonObject = completeResult {

@@ -231,7 +231,9 @@ internal class PostgresAccountStore(
 
     override suspend fun devices(userId: UserId): List<DeviceSummary> = io {
         dataSource.connection.use { connection ->
-            connection.prepareStatement("select id, name, platform from device where user_id = ? order by created_at").use {
+            connection.prepareStatement(
+                "select id, name, platform from device where user_id = ? and revoked_at is null order by created_at",
+            ).use {
                 it.setObject(1, UUID.fromString(userId.value))
                 it.executeQuery().use { result ->
                     buildList {
@@ -249,7 +251,7 @@ internal class PostgresAccountStore(
         }
         dataSource.connection.use { connection ->
             connection.prepareStatement(
-                "update device set name = ? where id = ? and user_id = ?",
+                "update device set name = ? where id = ? and user_id = ? and revoked_at is null",
             ).use {
                 it.setString(1, normalized)
                 it.setObject(2, UUID.fromString(deviceId.value))
@@ -259,9 +261,21 @@ internal class PostgresAccountStore(
         }
     }
 
+    override suspend fun revokeDevice(userId: UserId, deviceId: DeviceId): Boolean = io {
+        dataSource.connection.use { connection ->
+            connection.prepareStatement(
+                "update device set revoked_at = now() where id = ? and user_id = ? and revoked_at is null",
+            ).use {
+                it.setObject(1, UUID.fromString(deviceId.value))
+                it.setObject(2, UUID.fromString(userId.value))
+                it.executeUpdate() == 1
+            }
+        }
+    }
+
     override suspend fun deviceUser(deviceId: DeviceId): UserId? = io {
         dataSource.connection.use { connection ->
-            connection.prepareStatement("select user_id from device where id = ?").use {
+            connection.prepareStatement("select user_id from device where id = ? and revoked_at is null").use {
                 it.setObject(1, UUID.fromString(deviceId.value))
                 it.executeQuery().use { result -> if (result.next()) UserId(result.getObject(1).toString()) else null }
             }
@@ -270,7 +284,9 @@ internal class PostgresAccountStore(
 
     override suspend fun authenticateDevice(deviceId: DeviceId, secret: String): Boolean = io {
         dataSource.connection.use { connection ->
-            connection.prepareStatement("select 1 from device where id = ? and secret_hash = ?").use {
+            connection.prepareStatement(
+                "select 1 from device where id = ? and secret_hash = ? and revoked_at is null",
+            ).use {
                 it.setObject(1, UUID.fromString(deviceId.value))
                 it.setString(2, sha256(secret))
                 it.executeQuery().use(ResultSet::next)
@@ -451,9 +467,11 @@ internal class PostgresAccountStore(
                         name text not null,
                         platform text not null,
                         secret_hash text not null,
-                        created_at timestamptz not null default now()
+                        created_at timestamptz not null default now(),
+                        revoked_at timestamptz
                     )
                 """.trimIndent())
+                statement.executeUpdate("alter table device add column if not exists revoked_at timestamptz")
                 statement.executeUpdate("""
                     create table if not exists enrollment_token(
                         token_hash text primary key,
