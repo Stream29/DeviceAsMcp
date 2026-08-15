@@ -32,3 +32,7 @@
   and immediate credential invalidation, empty device-list invalidation events,
   and proxy-log redaction.
 - The `v0.1.5` daemon release uses Kotlin/Native CMS on every target.
+- The production Web frontend was rebuilt from the `v0.1.6` snapshot on
+  2026-08-16 without recreating the unchanged server or middleware.
+- The `v0.1.6` Web API decoder ignores unknown response fields so an already
+  loaded frontend survives additive backend schema changes.

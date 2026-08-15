@@ -100,6 +100,9 @@
 - Build the server for the JVM.
 - Implement the JVM server with Ktor Server.
 - Use Ktor Client for client-side network communication.
+- Keep the shared `ProtocolJson` decoder strict.
+- Let the Web API response decoder ignore unknown fields so an already loaded
+  frontend survives additive backend schema changes during deployment.
 - Select a TLS-capable native Ktor client engine per daemon platform.
   - Use Curl on Linux.
   - Use Darwin on macOS.

@@ -32,6 +32,7 @@ jobs:
           :shared:linuxX64Test
           :server:test
           :daemon:compileKotlinLinuxX64
+          :web:wasmJsTest
           :web:wasmJsBrowserDistribution
       - name: Validate POSIX installer
         run: sh -n install/install-device-as-mcp.sh

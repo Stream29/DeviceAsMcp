@@ -69,7 +69,7 @@ private val client = HttpClient(Js) {
             credentials = "include".toJsString()
         }
     }
-    install(ContentNegotiation) { json(ProtocolJson) }
+    install(ContentNegotiation) { json(WebApiJson) }
     install(SSE)
 }
 private val uiScope = kotlinx.coroutines.MainScope()
