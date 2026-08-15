@@ -31,6 +31,7 @@ import io.github.stream29.mcp.device.protocol.PasswordLoginRequest
 import io.github.stream29.mcp.device.protocol.ProtocolJson
 import io.github.stream29.mcp.device.protocol.RegisterRequest
 import io.github.stream29.mcp.device.protocol.RenameDeviceRequest
+import io.github.stream29.mcp.device.protocol.UpdateDeviceDescriptionRequest
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.js.Js
@@ -386,6 +387,26 @@ private fun DevicePanel() {
                                     loading = false
                                 }
                             },
+                            onUpdateDescription = { device, description ->
+                                val token = accessToken ?: return@DevicesScreen
+                                loading = true
+                                error = null
+                                launchUi {
+                                    runCatching {
+                                        apiPutNoContent(
+                                            "/api/devices/${device.id.value}/description",
+                                            token,
+                                            UpdateDeviceDescriptionRequest(description),
+                                        )
+                                        refresh(token, AppRoute.DEVICES)
+                                    }.onSuccess {
+                                        showMessage("Device description updated")
+                                    }.onFailure {
+                                        error = it.message ?: "Device description update failed"
+                                    }
+                                    loading = false
+                                }
+                            },
                             onRevoke = { device ->
                                 val token = accessToken ?: return@DevicesScreen
                                 loading = true
@@ -578,10 +599,10 @@ private suspend fun apiPostNoContent(path: String, token: String) {
     response.requireApiSuccess(authenticated = true)
 }
 
-private suspend fun apiPutNoContent(
+private suspend inline fun <reified T> apiPutNoContent(
     path: String,
     token: String,
-    body: RenameDeviceRequest,
+    body: T,
 ) {
     val response = client.put("${serverUrl()}$path") {
         bearerAuth(token)

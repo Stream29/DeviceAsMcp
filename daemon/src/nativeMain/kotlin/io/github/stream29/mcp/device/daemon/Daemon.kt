@@ -30,8 +30,8 @@ internal class DeviceDaemon(
     private val client: HttpClient,
     private val scope: CoroutineScope,
 ) {
-    private val terminals = TerminalSessions(scope)
-    private val files = FileTransfers(config, client, scope)
+    private val terminalSessions = lazy { TerminalSessions(scope) }
+    private val fileTransfers = lazy { FileTransfers(config, client, scope) }
     private val results = mutableMapOf<OperationId, OperationResultEnvelope>()
     private val queued = mutableMapOf<OperationId, kotlinx.coroutines.Job>()
     private val submissions = mutableMapOf<OperationId, kotlinx.coroutines.Job>()
@@ -44,7 +44,9 @@ internal class DeviceDaemon(
                     "${config.serverUrl}/daemon/connect?deviceId=${config.credential.deviceId.value}",
                     request = { header("X-Device-Secret", config.credential.secret) },
                 ) {
-                    files.reportCoordinatorLosses()
+                    if (fileTransfers.isInitialized()) {
+                        fileTransfers.value.reportCoordinatorLosses()
+                    }
                     incoming.collect { event ->
                         if (event.event != "operation" || event.data == null) return@collect
                         val operation = ProtocolJson.decodeFromString<OperationEnvelope>(event.data!!)
@@ -93,12 +95,14 @@ internal class DeviceDaemon(
     private suspend fun execute(operation: OperationEnvelope): OperationResultEnvelope {
         val result = runCatching {
             when (val payload = operation.payload) {
-                is OperationPayload.LaunchTerminalSession -> terminals.launch(payload.script, payload.tty)
+                is OperationPayload.LaunchTerminalSession ->
+                    terminalSessions.value.launch(payload.script, payload.tty)
                 is OperationPayload.TerminalSessionInput ->
-                    terminals.input(payload.sessionId, payload.stdin, payload.eof)
-                is OperationPayload.TerminalSessionOutput -> terminals.output(payload.sessionId)
+                    terminalSessions.value.input(payload.sessionId, payload.stdin, payload.eof)
+                is OperationPayload.TerminalSessionOutput ->
+                    terminalSessions.value.output(payload.sessionId)
                 is OperationPayload.PrepareFileSource -> {
-                    files.prepareSource(
+                    fileTransfers.value.prepareSource(
                         payload.transferId,
                         payload.sourcePath,
                         payload.relayInstanceId,
@@ -106,7 +110,7 @@ internal class DeviceDaemon(
                     OperationResultPayload.FilePreflight(true)
                 }
                 is OperationPayload.PrepareFileDestination -> {
-                    files.prepareDestination(
+                    fileTransfers.value.prepareDestination(
                         payload.transferId,
                         payload.destinationPath,
                         payload.relayInstanceId,
@@ -114,15 +118,15 @@ internal class DeviceDaemon(
                     OperationResultPayload.FilePreflight(true)
                 }
                 is OperationPayload.StartFileSource -> {
-                    files.startSource(payload.transferId, payload.relayInstanceId)
+                    fileTransfers.value.startSource(payload.transferId, payload.relayInstanceId)
                     OperationResultPayload.Acknowledged()
                 }
                 is OperationPayload.StartFileDestination -> {
-                    files.startDestination(payload.transferId, payload.relayInstanceId)
+                    fileTransfers.value.startDestination(payload.transferId, payload.relayInstanceId)
                     OperationResultPayload.Acknowledged()
                 }
                 is OperationPayload.CancelFileTransfer -> {
-                    files.cancel(payload.transferId)
+                    fileTransfers.value.cancel(payload.transferId)
                     OperationResultPayload.Acknowledged()
                 }
                 is OperationPayload.CancelOperation -> OperationResultPayload.Acknowledged(false)
@@ -150,7 +154,12 @@ internal class DeviceDaemon(
                 submitResult(result)
             } finally {
                 stateMutex.withLock {
-                    if (submissions[result.operationId] === job) submissions.remove(result.operationId)
+                    if (submissions[result.operationId] === job) {
+                        submissions.remove(result.operationId)
+                        if (results[result.operationId] == result) {
+                            results.remove(result.operationId)
+                        }
+                    }
                 }
             }
         }

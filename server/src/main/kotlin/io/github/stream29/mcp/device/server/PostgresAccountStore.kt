@@ -232,12 +232,22 @@ internal class PostgresAccountStore(
     override suspend fun devices(userId: UserId): List<DeviceSummary> = io {
         dataSource.connection.use { connection ->
             connection.prepareStatement(
-                "select id, name, platform from device where user_id = ? and revoked_at is null order by created_at",
+                "select id, name, platform, description from device where user_id = ? and revoked_at is null order by created_at",
             ).use {
                 it.setObject(1, UUID.fromString(userId.value))
                 it.executeQuery().use { result ->
                     buildList {
-                        while (result.next()) add(DeviceSummary(DeviceId(result.getObject("id").toString()), result.getString("name"), result.getString("platform"), false))
+                        while (result.next()) {
+                            add(
+                                DeviceSummary(
+                                    id = DeviceId(result.getObject("id").toString()),
+                                    name = result.getString("name"),
+                                    platform = result.getString("platform"),
+                                    online = false,
+                                    description = result.getString("description"),
+                                ),
+                            )
+                        }
                     }
                 }
             }
@@ -257,6 +267,36 @@ internal class PostgresAccountStore(
                 it.setObject(2, UUID.fromString(deviceId.value))
                 it.setObject(3, UUID.fromString(userId.value))
                 it.executeUpdate() == 1
+            }
+        }
+    }
+
+    override suspend fun updateDeviceDescription(
+        userId: UserId,
+        deviceId: DeviceId,
+        description: String,
+    ): DeviceSummary? = io {
+        dataSource.connection.use { connection ->
+            connection.prepareStatement(
+                """
+                update device set description = ?
+                where id = ? and user_id = ? and revoked_at is null
+                returning id, name, platform, description
+                """.trimIndent(),
+            ).use {
+                it.setString(1, description)
+                it.setObject(2, UUID.fromString(deviceId.value))
+                it.setObject(3, UUID.fromString(userId.value))
+                it.executeQuery().use { result ->
+                    if (!result.next()) return@io null
+                    DeviceSummary(
+                        id = DeviceId(result.getObject("id").toString()),
+                        name = result.getString("name"),
+                        platform = result.getString("platform"),
+                        online = false,
+                        description = result.getString("description"),
+                    )
+                }
             }
         }
     }
@@ -466,12 +506,16 @@ internal class PostgresAccountStore(
                         user_id uuid not null references app_user(id) on delete cascade,
                         name text not null,
                         platform text not null,
+                        description text not null default '',
                         secret_hash text not null,
                         created_at timestamptz not null default now(),
                         revoked_at timestamptz
                     )
                 """.trimIndent())
                 statement.executeUpdate("alter table device add column if not exists revoked_at timestamptz")
+                statement.executeUpdate(
+                    "alter table device add column if not exists description text not null default ''",
+                )
                 statement.executeUpdate("""
                     create table if not exists enrollment_token(
                         token_hash text primary key,

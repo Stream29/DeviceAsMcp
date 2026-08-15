@@ -336,6 +336,11 @@ internal interface AccountStore {
     suspend fun enrollDevice(userId: UserId, name: String, platform: String): DeviceCredential
     suspend fun devices(userId: UserId): List<DeviceSummary>
     suspend fun renameDevice(userId: UserId, deviceId: DeviceId, name: String): Boolean
+    suspend fun updateDeviceDescription(
+        userId: UserId,
+        deviceId: DeviceId,
+        description: String,
+    ): DeviceSummary?
     suspend fun revokeDevice(userId: UserId, deviceId: DeviceId): Boolean
     suspend fun deviceUser(deviceId: DeviceId): UserId?
     suspend fun authenticateDevice(deviceId: DeviceId, secret: String): Boolean
@@ -501,6 +506,18 @@ internal class InMemoryAccountStore(
             devices[deviceId] = device.copy(summary = device.summary.copy(name = normalized))
             true
         }
+
+    override suspend fun updateDeviceDescription(
+        userId: UserId,
+        deviceId: DeviceId,
+        description: String,
+    ): DeviceSummary? = mutex.withLock {
+        val device = devices[deviceId]?.takeIf { it.userId == userId }
+            ?: return@withLock null
+        val updated = device.summary.copy(description = description)
+        devices[deviceId] = device.copy(summary = updated)
+        updated
+    }
 
     override suspend fun revokeDevice(userId: UserId, deviceId: DeviceId): Boolean = mutex.withLock {
         if (devices[deviceId]?.userId != userId) return@withLock false

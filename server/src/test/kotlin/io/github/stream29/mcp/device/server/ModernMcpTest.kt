@@ -17,6 +17,7 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.testing.testApplication
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -64,6 +65,7 @@ class ModernMcpTest {
         assertEquals(HttpStatusCode.OK, response.status)
         val body = ProtocolJson.parseToJsonElement(response.body<String>()).jsonObject
         assertTrue(body["result"].toString().contains("launch_terminal_session"))
+        assertTrue(body["result"].toString().contains("update_device_description"))
     }
 
     @Test
@@ -136,6 +138,56 @@ class ModernMcpTest {
         val error = ProtocolJson.parseToJsonElement(response.body<String>())
             .jsonObject.getValue("error").jsonObject
         assertEquals(-32602, error.getValue("code").jsonPrimitive.content.toInt())
+    }
+
+    @Test
+    fun agentCanUpdateAndListDeviceDescriptions() = testApplication {
+        val runtime = testRuntime()
+        application { deviceAsMcpModule(runtime) }
+        val user = requireNotNull(
+            runtime.accounts.register("description-agent", "long enough password"),
+        )
+        val device = runtime.accounts.enrollDevice(user.id, "workstation", "linux-x64")
+        val key = runtime.accounts.createAuthKey(
+            user.id,
+            "test",
+            runtime.oauth.resourceUri,
+            setOf(OAuthService.MCP_SCOPE),
+        )
+        val description = "Primary build workstation"
+
+        val updated = client.post("/mcp") {
+            mcpHeaders(key.token, "tools/call", "update_device_description")
+            setBody(
+                mcpRequest(
+                    method = "tools/call",
+                    extraParams =
+                        ""","name":"update_device_description","arguments":{"deviceId":"${device.deviceId.value}","description":"$description"}""",
+                ),
+            )
+        }
+
+        assertEquals(HttpStatusCode.OK, updated.status)
+        val updatedDevice = ProtocolJson.parseToJsonElement(updated.body<String>())
+            .jsonObject.getValue("result").jsonObject
+            .getValue("structuredContent").jsonObject
+        assertEquals(description, updatedDevice.getValue("description").jsonPrimitive.content)
+
+        val listed = client.post("/mcp") {
+            mcpHeaders(key.token, "tools/call", "list_device")
+            setBody(
+                mcpRequest(
+                    method = "tools/call",
+                    extraParams = ""","name":"list_device","arguments":{}""",
+                ),
+            )
+        }
+
+        assertEquals(HttpStatusCode.OK, listed.status)
+        val listedDevice = ProtocolJson.parseToJsonElement(listed.body<String>())
+            .jsonObject.getValue("result").jsonObject
+            .getValue("structuredContent").jsonArray.single().jsonObject
+        assertEquals(description, listedDevice.getValue("description").jsonPrimitive.content)
     }
 
     @Test

@@ -203,6 +203,21 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
                 }
                 toolSuccess(ProtocolJson.encodeToJsonElement(ListSerializer(DeviceSummary.serializer()), devices))
             }
+            RemoteMcpTools.UPDATE_DEVICE_DESCRIPTION -> {
+                val deviceId = arguments.requiredString("deviceId").let(::DeviceId)
+                val device = runtime.accounts.updateDeviceDescription(
+                    user.id,
+                    deviceId,
+                    arguments.requiredText("description"),
+                ) ?: error("Device not found")
+                runtime.announceDeviceListUpdate(user.id)
+                toolSuccess(
+                    ProtocolJson.encodeToJsonElement(
+                        DeviceSummary.serializer(),
+                        device.copy(online = runtime.routing.deviceOwner(deviceId) != null),
+                    ),
+                )
+            }
             RemoteMcpTools.LAUNCH_TERMINAL_SESSION -> {
                 val deviceId = arguments.requiredString("deviceId").let(::DeviceId)
                 requireOwned(user, deviceId)
@@ -460,7 +475,7 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
         put("serverInfo", SERVER_META.getValue("io.modelcontextprotocol/serverInfo"))
         put(
             "instructions",
-            "Use the tools to list the caller's devices, run terminal sessions, and transfer files between devices.",
+            "Use the tools to list and describe the caller's devices, run terminal sessions, and transfer files between devices.",
         )
     }
 
@@ -469,7 +484,7 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
         put("capabilities", buildJsonObject { put("tools", buildJsonObject { put("listChanged", false) }) })
         put(
             "instructions",
-            "Use the tools to list the caller's devices, run terminal sessions, and transfer files between devices.",
+            "Use the tools to list and describe the caller's devices, run terminal sessions, and transfer files between devices.",
         )
         put("ttlMs", 300_000)
         put("cacheScope", "public")
@@ -567,6 +582,9 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
     private fun JsonObject.requiredString(name: String): String =
         optionalString(name)?.takeIf { it.isNotBlank() } ?: throw IllegalArgumentException("$name is required")
 
+    private fun JsonObject.requiredText(name: String): String =
+        optionalString(name) ?: throw IllegalArgumentException("$name is required")
+
     private fun JsonObject.optionalString(name: String): String? {
         val value = get(name) ?: return null
         return (value as? JsonPrimitive)
@@ -584,6 +602,8 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
     private fun JsonObject.validateToolArguments(name: String) {
         val (required, allowed) = when (name) {
             RemoteMcpTools.LIST_DEVICE -> emptySet<String>() to emptySet()
+            RemoteMcpTools.UPDATE_DEVICE_DESCRIPTION ->
+                setOf("deviceId", "description") to setOf("deviceId", "description")
             RemoteMcpTools.LAUNCH_TERMINAL_SESSION ->
                 setOf("deviceId", "script") to setOf("deviceId", "script", "tty")
             RemoteMcpTools.TERMINAL_SESSION_INPUT ->
@@ -604,6 +624,10 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
         require(unknown.isEmpty()) { "Unknown tool arguments: ${unknown.sorted().joinToString()}" }
         when (name) {
             RemoteMcpTools.LIST_DEVICE -> Unit
+            RemoteMcpTools.UPDATE_DEVICE_DESCRIPTION -> {
+                requiredString("deviceId")
+                requiredText("description")
+            }
             RemoteMcpTools.LAUNCH_TERMINAL_SESSION -> {
                 requiredString("deviceId")
                 requiredString("script")
@@ -671,7 +695,10 @@ internal class ModernMcpEndpoint(private val runtime: ServerRuntime) {
             )
         }
         private val TOOL_DESCRIPTIONS = mapOf(
-            RemoteMcpTools.LIST_DEVICE to "List devices owned by the authenticated user and their online state.",
+            RemoteMcpTools.LIST_DEVICE to
+                "List devices owned by the authenticated user, including descriptions and online state.",
+            RemoteMcpTools.UPDATE_DEVICE_DESCRIPTION to
+                "Set or clear the description of a device owned by the authenticated user.",
             RemoteMcpTools.LAUNCH_TERMINAL_SESSION to "Run a shell script on a device, returning output or a background session ID.",
             RemoteMcpTools.TERMINAL_SESSION_INPUT to "Write UTF-8 input or EOF to a background terminal session.",
             RemoteMcpTools.TERMINAL_SESSION_OUTPUT to "Consume currently unread output from a background terminal session.",

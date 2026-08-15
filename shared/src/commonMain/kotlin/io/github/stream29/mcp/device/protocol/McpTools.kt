@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonPrimitive
 
 object RemoteMcpTools {
     const val LIST_DEVICE = "list_device"
+    const val UPDATE_DEVICE_DESCRIPTION = "update_device_description"
     const val LAUNCH_TERMINAL_SESSION = "launch_terminal_session"
     const val TERMINAL_SESSION_INPUT = "terminal_session_input"
     const val TERMINAL_SESSION_OUTPUT = "terminal_session_output"
@@ -16,6 +17,7 @@ object RemoteMcpTools {
 
     val names: Set<String> = setOf(
         LIST_DEVICE,
+        UPDATE_DEVICE_DESCRIPTION,
         LAUNCH_TERMINAL_SESSION,
         TERMINAL_SESSION_INPUT,
         TERMINAL_SESSION_OUTPUT,
@@ -26,6 +28,13 @@ object RemoteMcpTools {
 
     val inputSchemas: Map<String, JsonObject> = mapOf(
         LIST_DEVICE to objectSchema(),
+        UPDATE_DEVICE_DESCRIPTION to objectSchema(
+            required = listOf("deviceId", "description"),
+            properties = mapOf(
+                "deviceId" to stringSchema(),
+                "description" to stringSchema(),
+            ),
+        ),
         LAUNCH_TERMINAL_SESSION to objectSchema(
             required = listOf("deviceId", "script"),
             properties = mapOf(

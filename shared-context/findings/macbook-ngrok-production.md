@@ -25,7 +25,10 @@
 - Caddy runtime logs remove authorization headers, cookies, device secrets, and
   OAuth query credentials.
 - The production server and Material 3 management UI were rebuilt from the
-  pending `v0.1.3` snapshot on 2026-08-15.
-- Production verification covered named access keys, Codex-compatible MCP,
-  device revocation and immediate disconnect, credential invalidation, and
-  proxy-log redaction.
+  `v0.1.5` snapshot on 2026-08-15.
+- Production verification covered editable device descriptions through the
+  management API, modern MCP, and Codex-compatible MCP.
+- Production verification also covered named access keys, device revocation
+  and immediate credential invalidation, empty device-list invalidation events,
+  and proxy-log redaction.
+- The `v0.1.5` daemon release uses Kotlin/Native CMS on every target.

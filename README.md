@@ -150,6 +150,8 @@ limited current-user Windows Scheduled Task. Each launcher restarts the daemon
 after failure without granting it administrator privileges. The panel supplies
 its own server URL automatically, and the target device uses its hostname as the
 initial display name. Enrolled devices can be renamed or revoked from the panel.
+Each device also has an optional description that people and MCP agents can view
+and edit.
 Revocation disconnects the current daemon and permanently invalidates its saved
 credential; reconnecting that machine requires enrollment again.
 
@@ -179,6 +181,10 @@ device-as-mcp run
 
 Credentials are stored in `~/.device-as-mcp/daemon.json`.
 
+- Release binaries use size-oriented code generation, compact Latin-1 strings,
+  a non-paged Native allocator, and the concurrent mark-and-sweep collector.
+- Terminal and file-transfer subsystems initialize only when first used.
+- Submitted operation results do not remain in the daemon's deduplication cache.
 - POSIX directories use mode `0700`.
 - POSIX credential files use mode `0600`.
 - Windows credentials receive a current-user-only ACL.
@@ -205,6 +211,7 @@ stateless and does not issue `Mcp-Session-Id`.
 Tools:
 
 - `list_device`
+- `update_device_description`
 - `launch_terminal_session`
 - `terminal_session_input`
 - `terminal_session_output`

@@ -19,6 +19,7 @@ import io.github.stream29.mcp.device.protocol.ProtocolJson
 import io.github.stream29.mcp.device.protocol.RegisterRequest
 import io.github.stream29.mcp.device.protocol.RenameDeviceRequest
 import io.github.stream29.mcp.device.protocol.TransferId
+import io.github.stream29.mcp.device.protocol.UpdateDeviceDescriptionRequest
 import io.ktor.client.call.body
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.sse.SSE
@@ -116,10 +117,22 @@ class ApplicationTest {
             setBody(RenameDeviceRequest("Workstation"))
         }
         assertEquals(HttpStatusCode.NoContent, rename.status)
+        val description = jsonClient.put(
+            "/api/devices/${credential.deviceId.value}/description",
+        ) {
+            bearer(session.accessToken)
+            header(HttpHeaders.ContentType, ContentType.Application.Json)
+            setBody(UpdateDeviceDescriptionRequest("Primary build workstation"))
+        }
+        assertEquals(HttpStatusCode.NoContent, description.status)
         val devices = jsonClient.get("/api/devices") {
             bearer(session.accessToken)
         }.body<List<DeviceSummary>>()
         assertEquals(listOf("Workstation"), devices.map(DeviceSummary::name))
+        assertEquals(
+            listOf("Primary build workstation"),
+            devices.map(DeviceSummary::description),
+        )
 
         val key = jsonClient.post("/api/auth-keys") {
             bearer(session.accessToken)
@@ -185,6 +198,16 @@ class ApplicationTest {
                     setBody(RenameDeviceRequest("Workstation"))
                 }
                 assertEquals(HttpStatusCode.NoContent, renamed.status)
+                awaitUpdate()
+
+                val described = jsonClient.put(
+                    "/api/devices/${credential.deviceId.value}/description",
+                ) {
+                    bearer(session)
+                    header(HttpHeaders.ContentType, ContentType.Application.Json)
+                    setBody(UpdateDeviceDescriptionRequest("Portable development machine"))
+                }
+                assertEquals(HttpStatusCode.NoContent, described.status)
                 awaitUpdate()
 
                 val daemonStream = launch {

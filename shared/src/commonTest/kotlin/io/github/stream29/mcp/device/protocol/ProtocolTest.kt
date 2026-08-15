@@ -107,6 +107,27 @@ class ProtocolTest {
     }
 
     @Test
+    fun deviceDescriptionRoundTripsAndHasAnUpdateTool() {
+        val device = DeviceSummary(
+            id = DeviceId("device-1"),
+            name = "workstation",
+            platform = "linux-x64",
+            online = true,
+            description = "Primary build host",
+        )
+
+        val encoded = ProtocolJson.encodeToString(device)
+
+        assertEquals(device, ProtocolJson.decodeFromString<DeviceSummary>(encoded))
+        assertTrue(encoded.contains("\"description\":\"Primary build host\""))
+        val schema = RemoteMcpTools.inputSchemas.getValue(
+            RemoteMcpTools.UPDATE_DEVICE_DESCRIPTION,
+        ).toString()
+        assertTrue(schema.contains("\"deviceId\""))
+        assertTrue(schema.contains("\"description\""))
+    }
+
+    @Test
     fun manifestRejectsTraversal() {
         assertTrue(isSafeRelativePath("folder/file.txt"))
         assertFalse(isSafeRelativePath("../secret"))

@@ -9,6 +9,14 @@
 
 - Build a daemon CLI with Kotlin/Native.
 - Target Linux x64, Linux ARM64, macOS ARM64, and Windows x64 daemon binaries.
+- Optimize daemon release binaries for low size and low idle memory.
+  - Enable the Native `smallBinary` option.
+  - Store Latin-1-compatible strings using the compact representation.
+  - Disable Native allocator paging.
+  - Use the concurrent mark-and-sweep collector.
+  - Parse help before initializing coroutines or the HTTP client.
+  - Initialize terminal and file-transfer subsystems only when first used.
+  - Release cached operation-result payloads after their submission job ends.
 - Let the daemon CLI authenticate a user and connect the user's device to the server.
 - Let the daemon establish a persistent outbound SSE connection to receive server-initiated operations.
 - Let the daemon return operation results through ordinary HTTP requests.
@@ -164,6 +172,7 @@
     expired owner leases.
   - Publish invalidations after enrollment, rename, revoke, daemon connect, and
     daemon disconnect state changes.
+  - Publish an invalidation after a device-description change.
   - Keep successful state changes independent of invalidation delivery.
   - Use the RabbitMQ topic exchange
     `device_as_mcp.device_list_updates.v1` for cross-instance propagation.
@@ -229,6 +238,12 @@
   - Let the user choose Linux x64, Linux ARM64, macOS ARM64, or Windows x64.
   - Let the target device derive its initial name from its hostname.
   - Let the user rename an enrolled device from the management frontend.
+  - Give every device a durable description.
+  - Default descriptions to the empty string for existing and newly enrolled
+    devices.
+  - Preserve supplied description text without a domain-level character limit.
+  - Let the user view, edit, and clear a device description from the management
+    frontend.
   - Let the user revoke an enrolled device after a destructive-action confirmation.
   - Soft-revoke the device record so its credential cannot authenticate again.
   - Reject invalid or revoked daemon credentials before starting an SSE response.
@@ -263,6 +278,13 @@
 ## Remote MCP Tools
 
 - Expose `list_device`.
+  - Include each device's description.
+- Expose `update_device_description`.
+  - Require an owned device ID and a description string.
+  - Allow an empty description to clear it.
+  - Preserve the supplied description without a domain-level character limit.
+  - Return the updated device summary.
+  - Publish a device-list invalidation after the durable update succeeds.
 - Expose `launch_terminal_session`.
   - Require a device ID.
   - Accept a command-line script.
@@ -392,6 +414,8 @@
 ## Backend Infrastructure
 
 - Use PostgreSQL, Redis, and RabbitMQ as backend middleware.
+- Do not start the server, PostgreSQL, Redis, or RabbitMQ on the local
+  development workstation; run service-backed validation remotely.
 - Use Redis for device ownership, leases, fencing, and ephemeral transfer state.
 - Use RabbitMQ for cross-instance control-plane RPC.
 - Provide a Docker Compose development environment for PostgreSQL, Redis, and RabbitMQ when backend development begins.

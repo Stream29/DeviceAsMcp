@@ -52,4 +52,33 @@ class AccountStoreTest {
         assertFalse(accounts.renameDevice(other.id, device.deviceId, "not allowed"))
         assertEquals("workstation", accounts.devices(owner.id).single().name)
     }
+
+    @Test
+    fun deviceDescriptionPreservesUnlimitedTextAndRequiresOwnership() = runTest {
+        val accounts = InMemoryAccountStore()
+        val owner = assertNotNull(accounts.register("description-owner", "correct horse battery staple"))
+        val other = assertNotNull(accounts.register("description-other", "correct horse battery staple"))
+        val device = accounts.enrollDevice(owner.id, "workstation", "linux-x64")
+        val description = "  build host\n" + "x".repeat(10_000)
+
+        assertEquals("", accounts.devices(owner.id).single().description)
+        assertNotNull(
+            accounts.updateDeviceDescription(
+                owner.id,
+                device.deviceId,
+                description,
+            ),
+        )
+        assertEquals(description, accounts.devices(owner.id).single().description)
+        assertNull(
+            accounts.updateDeviceDescription(
+                other.id,
+                device.deviceId,
+                "not allowed",
+            ),
+        )
+        assertEquals(description, accounts.devices(owner.id).single().description)
+        assertNotNull(accounts.updateDeviceDescription(owner.id, device.deviceId, ""))
+        assertEquals("", accounts.devices(owner.id).single().description)
+    }
 }

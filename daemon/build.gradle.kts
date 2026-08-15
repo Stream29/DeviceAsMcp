@@ -13,7 +13,13 @@ kotlin {
     }
 
     linuxX64 {
-        binaries.executable { entryPoint = "io.github.stream29.mcp.device.daemon.main" }
+        binaries.executable {
+            entryPoint = "io.github.stream29.mcp.device.daemon.main"
+            binaryOption("smallBinary", "true")
+            binaryOption("latin1Strings", "true")
+            binaryOption("pagedAllocator", "false")
+            binaryOption("gc", "cms")
+        }
         compilations.named("main") {
             cinterops.create("daemonPosix") {
                 defFile(project.file("src/nativeInterop/cinterop/daemon_posix.def"))
@@ -21,7 +27,13 @@ kotlin {
         }
     }
     linuxArm64 {
-        binaries.executable { entryPoint = "io.github.stream29.mcp.device.daemon.main" }
+        binaries.executable {
+            entryPoint = "io.github.stream29.mcp.device.daemon.main"
+            binaryOption("smallBinary", "true")
+            binaryOption("latin1Strings", "true")
+            binaryOption("pagedAllocator", "false")
+            binaryOption("gc", "cms")
+        }
         compilations.named("main") {
             cinterops.create("daemonPosix") {
                 defFile(project.file("src/nativeInterop/cinterop/daemon_posix.def"))
@@ -29,7 +41,13 @@ kotlin {
         }
     }
     macosArm64 {
-        binaries.executable { entryPoint = "io.github.stream29.mcp.device.daemon.main" }
+        binaries.executable {
+            entryPoint = "io.github.stream29.mcp.device.daemon.main"
+            binaryOption("smallBinary", "true")
+            binaryOption("latin1Strings", "true")
+            binaryOption("pagedAllocator", "false")
+            binaryOption("gc", "cms")
+        }
         compilations.named("main") {
             cinterops.create("daemonPosix") {
                 defFile(project.file("src/nativeInterop/cinterop/daemon_posix.def"))
@@ -37,7 +55,13 @@ kotlin {
         }
     }
     mingwX64 {
-        binaries.executable { entryPoint = "io.github.stream29.mcp.device.daemon.main" }
+        binaries.executable {
+            entryPoint = "io.github.stream29.mcp.device.daemon.main"
+            binaryOption("smallBinary", "true")
+            binaryOption("latin1Strings", "true")
+            binaryOption("pagedAllocator", "false")
+            binaryOption("gc", "cms")
+        }
         compilations.named("main") {
             cinterops.create("daemonConPty") {
                 defFile(project.file("src/nativeInterop/cinterop/daemon_conpty.def"))

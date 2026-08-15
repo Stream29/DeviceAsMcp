@@ -33,10 +33,14 @@ data class DeviceSummary(
     val name: String,
     val platform: String,
     val online: Boolean,
+    val description: String = "",
 )
 
 @Serializable
 data class RenameDeviceRequest(val name: String)
+
+@Serializable
+data class UpdateDeviceDescriptionRequest(val description: String)
 
 @Serializable
 data class AuthKeySummary(val id: String, val name: String, val createdAtEpochMillis: Long)

@@ -20,6 +20,7 @@ import io.github.stream29.mcp.device.protocol.ProtocolJson
 import io.github.stream29.mcp.device.protocol.RegisterRequest
 import io.github.stream29.mcp.device.protocol.RenameDeviceRequest
 import io.github.stream29.mcp.device.protocol.TransferId
+import io.github.stream29.mcp.device.protocol.UpdateDeviceDescriptionRequest
 import io.github.stream29.mcp.device.protocol.UserId
 import io.ktor.http.ContentType
 import io.ktor.http.Cookie
@@ -504,6 +505,23 @@ private fun io.ktor.server.routing.Route.managementRoutes(runtime: ServerRuntime
                 ?: return@put call.respond(HttpStatusCode.BadRequest)
             val request = call.receive<RenameDeviceRequest>()
             if (runtime.accounts.renameDevice(user.id, deviceId, request.name)) {
+                runtime.announceDeviceListUpdate(user.id)
+                call.respond(HttpStatusCode.NoContent)
+            } else {
+                call.respond(HttpStatusCode.NotFound)
+            }
+        }
+        put("/devices/{id}/description") {
+            val user = call.requireManagementUser(runtime.accounts) ?: return@put
+            val deviceId = call.parameters["id"]?.let(::DeviceId)
+                ?: return@put call.respond(HttpStatusCode.BadRequest)
+            val request = call.receive<UpdateDeviceDescriptionRequest>()
+            val updated = runtime.accounts.updateDeviceDescription(
+                user.id,
+                deviceId,
+                request.description,
+            )
+            if (updated != null) {
                 runtime.announceDeviceListUpdate(user.id)
                 call.respond(HttpStatusCode.NoContent)
             } else {

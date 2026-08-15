@@ -653,6 +653,7 @@ internal fun DevicesScreen(
     onPlatformSelected: (InstallPlatform) -> Unit,
     onGenerateCommand: () -> Unit,
     onRename: (DeviceSummary, String) -> Unit,
+    onUpdateDescription: (DeviceSummary, String) -> Unit,
     onRevoke: (DeviceSummary) -> Unit,
     onCopyCommand: (String) -> Unit,
     modifier: Modifier = Modifier,
@@ -675,6 +676,7 @@ internal fun DevicesScreen(
                     devices = devices,
                     busy = busy,
                     onRename = onRename,
+                    onUpdateDescription = onUpdateDescription,
                     onRevoke = onRevoke,
                 )
             },
@@ -697,6 +699,7 @@ private fun DeviceInventory(
     devices: List<DeviceSummary>,
     busy: Boolean,
     onRename: (DeviceSummary, String) -> Unit,
+    onUpdateDescription: (DeviceSummary, String) -> Unit,
     onRevoke: (DeviceSummary) -> Unit,
 ) {
     var pendingRevocation by remember { mutableStateOf<DeviceSummary?>(null) }
@@ -748,7 +751,7 @@ private fun DeviceInventory(
         description = if (devices.isEmpty()) {
             "Enrolled devices appear here."
         } else {
-            "Rename or revoke devices and see whether their daemon is connected."
+            "Describe, rename, or revoke devices and see whether their daemon is connected."
         },
         symbol = AppSymbol.DEVICES,
     ) {
@@ -765,6 +768,7 @@ private fun DeviceInventory(
                         device = device,
                         enabled = !busy,
                         onRename = { onRename(device, it) },
+                        onUpdateDescription = { onUpdateDescription(device, it) },
                         onRevoke = { pendingRevocation = device },
                     )
                 }
@@ -773,20 +777,27 @@ private fun DeviceInventory(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun DeviceItem(
     device: DeviceSummary,
     enabled: Boolean,
     onRename: (String) -> Unit,
+    onUpdateDescription: (String) -> Unit,
     onRevoke: () -> Unit,
 ) {
-    var editing by remember(device.id, device.name) { mutableStateOf(false) }
+    var editingName by remember(device.id, device.name) { mutableStateOf(false) }
+    var editingDescription by remember(device.id, device.description) { mutableStateOf(false) }
     var name by remember(device.id, device.name) { mutableStateOf(device.name) }
+    var description by remember(device.id, device.description) {
+        mutableStateOf(device.description)
+    }
     val normalized = name.trim()
-    val canSave = enabled &&
+    val canSaveName = enabled &&
         normalized.isNotEmpty() &&
         normalized.length <= MAX_DEVICE_NAME_LENGTH &&
         normalized != device.name
+    val canSaveDescription = enabled && description != device.description
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -831,7 +842,15 @@ private fun DeviceItem(
                 OnlineStatus(device.online)
             }
 
-            AnimatedVisibility(visible = editing) {
+            if (!editingDescription) {
+                Text(
+                    device.description.ifEmpty { "No description added." },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            AnimatedVisibility(visible = editingName) {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         value = name,
@@ -844,7 +863,7 @@ private fun DeviceItem(
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(
                             onDone = {
-                                if (canSave) onRename(normalized)
+                                if (canSaveName) onRename(normalized)
                             },
                         ),
                         modifier = Modifier.fillMaxWidth().semantics {
@@ -859,14 +878,14 @@ private fun DeviceItem(
                             enabled = enabled,
                             onClick = {
                                 name = device.name
-                                editing = false
+                                editingName = false
                             },
                         ) {
                             Text("Cancel")
                         }
                         Spacer(Modifier.width(8.dp))
                         Button(
-                            enabled = canSave,
+                            enabled = canSaveName,
                             onClick = { onRename(normalized) },
                         ) {
                             Text("Save name")
@@ -875,8 +894,52 @@ private fun DeviceItem(
                 }
             }
 
-            if (!editing) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            AnimatedVisibility(visible = editingDescription) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = description,
+                        onValueChange = { description = it },
+                        label = { Text("Device description") },
+                        supportingText = {
+                            Text("Describe this device for people and agents.")
+                        },
+                        minLines = 3,
+                        maxLines = 8,
+                        enabled = enabled,
+                        modifier = Modifier.fillMaxWidth().semantics {
+                            contentDescription = "Device description"
+                        },
+                    )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End,
+                    ) {
+                        TextButton(
+                            enabled = enabled,
+                            onClick = {
+                                description = device.description
+                                editingDescription = false
+                            },
+                        ) {
+                            Text("Cancel")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        Button(
+                            enabled = canSaveDescription,
+                            onClick = { onUpdateDescription(description) },
+                        ) {
+                            Text("Save description")
+                        }
+                    }
+                }
+            }
+
+            if (!editingName && !editingDescription) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     TextButton(
                         enabled = enabled,
                         onClick = onRevoke,
@@ -886,10 +949,15 @@ private fun DeviceItem(
                     ) {
                         Text("Revoke device")
                     }
-                    Spacer(Modifier.width(8.dp))
                     TextButton(
                         enabled = enabled,
-                        onClick = { editing = true },
+                        onClick = { editingDescription = true },
+                    ) {
+                        Text("Edit description")
+                    }
+                    TextButton(
+                        enabled = enabled,
+                        onClick = { editingName = true },
                     ) {
                         Text("Rename device")
                     }
